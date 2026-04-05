@@ -18,7 +18,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 PGO_DIR="/tmp/cobra-pgo-data"
 
-LLVM_PROFDATA="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin/llvm-profdata"
+LLVM_PROFDATA=$(find "$(rustc --print sysroot)" -name llvm-profdata | head -n 1)
+
+# Fallback: if the above is empty, try to find it in the rustup directory directly
+if [ -z "$LLVM_PROFDATA" ]; then
+    LLVM_PROFDATA=$(find ~/.rustup -name llvm-profdata | head -n 1)
+fi
 
 if [[ ! -x "$LLVM_PROFDATA" ]]; then
     echo "error: llvm-profdata not found at $LLVM_PROFDATA"

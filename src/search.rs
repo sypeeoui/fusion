@@ -292,19 +292,20 @@ fn run_beam_search_iteration(params: &mut SearchIterationParams<'_>) -> Option<S
         pv_clear_events: best.path_clear_events.to_vec(),
     };
 
-    let mut root_scores: Vec<(crate::header::Move, f32)> = Vec::new();
+    let mut root_scores: Vec<(crate::header::Move, bool, f32)> = Vec::new();
     for node in &beam {
         let raw = node.root_move.raw();
         match root_scores.iter_mut().find(|entry| entry.0.raw() == raw) {
             Some(entry) => {
-                if node.score > entry.1 {
-                    entry.1 = node.score;
+                if node.score > entry.2 {
+                    entry.1 = node.root_hold_used;
+                    entry.2 = node.score;
                 }
             }
-            None => root_scores.push((node.root_move, node.score)),
+            None => root_scores.push((node.root_move, node.root_hold_used, node.score)),
         }
     }
-    root_scores.sort_by(|a, b| b.1.total_cmp(&a.1));
+    root_scores.sort_by(|a, b| b.2.total_cmp(&a.2));
 
     let position_complexity = compute_position_complexity(&root_scores);
 
@@ -324,10 +325,10 @@ fn run_beam_search_iteration(params: &mut SearchIterationParams<'_>) -> Option<S
 
 /// Compute position complexity: variance of top-10 root move scores.
 /// High variance = sharp position (clear best moves), low = flat (all moves similar).
-fn compute_position_complexity(root_scores: &[(crate::header::Move, f32)]) -> f32 {
+fn compute_position_complexity(root_scores: &[(crate::header::Move, bool, f32)]) -> f32 {
     let mut top_n = [0.0f32; 10];
     let count = root_scores.len().min(10);
-    for (i, (_, s)) in root_scores.iter().take(10).enumerate() {
+    for (i, (_, _, s)) in root_scores.iter().take(10).enumerate() {
         top_n[i] = *s;
     }
     if count < 2 {

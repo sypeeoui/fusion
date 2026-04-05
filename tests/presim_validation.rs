@@ -383,8 +383,8 @@ fn test_attack_integration_tspin_scores_higher() {
         let maybe_score = full
             .root_scores
             .iter()
-            .find(|(root, _)| root.raw() == m.raw())
-            .map(|(_, score)| *score);
+            .find(|(root, _, _)| root.raw() == m.raw())
+            .map(|(_, _, score)| *score);
 
         let Some(score) = maybe_score else {
             continue;
@@ -459,7 +459,12 @@ fn search_root_scores(board: &Board, piece: Piece) -> Vec<f32> {
         coaching: Default::default(),
     };
     let full = find_best_move_with_scores(&state, &config, &weights);
-    let mut scores: Vec<f32> = full.unwrap().root_scores.iter().map(|(_, s)| *s).collect();
+    let mut scores: Vec<f32> = full
+        .unwrap()
+        .root_scores
+        .iter()
+        .map(|(_, _, s)| *s)
+        .collect();
     scores.sort_by(|a: &f32, b: &f32| b.partial_cmp(a).unwrap_or(std::cmp::Ordering::Equal));
     scores
 }

@@ -26,19 +26,26 @@ path = "src/bin/calibrate_skill_buckets.rs"
 name = "replay_validation_gate"
 path = "src/bin/replay_validation_gate.rs"
 
+[[bin]]
+name = "engine_api"
+path = "src/bin/engine_api.rs"
+
 [features]
 default = ["rayon"]
 rayon = ["dep:rayon"]
-wasm = ["dep:wasm-bindgen", "dep:serde", "dep:serde_json", "dep:js-sys", "dep:console_error_panic_hook"]
+wasm = ["dep:wasm-bindgen", "dep:serde_json", "dep:js-sys", "dep:console_error_panic_hook"]
 
 [dependencies]
 rayon = { version = "1.10", optional = true }
 smallvec = "1.13"
 wasm-bindgen = { version = "=0.2.100", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
+serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
 js-sys = { version = "0.3", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
+axum = "0.7"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
+tower-http = { version = "0.6", features = ["cors"] }
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false

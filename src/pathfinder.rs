@@ -11,11 +11,11 @@ use crate::header::*;
 
 // -- Input --
 
-pub(crate) const MAX_INPUTS: usize = 64;
+pub const MAX_INPUTS: usize = 64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
-pub(crate) enum Input {
+pub enum Input {
     NoInput = 0,
     ShiftLeft,
     ShiftRight,
@@ -31,25 +31,29 @@ pub(crate) enum Input {
 // -- Inputs --
 
 #[derive(Clone, Debug)]
-pub(crate) struct Inputs {
-    pub(crate) data: Vec<Input>,
+pub struct Inputs {
+    pub data: Vec<Input>,
 }
 
 impl Inputs {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Inputs { data: Vec::new() }
     }
 
-    pub(crate) fn push(&mut self, input: Input) {
+    pub fn push(&mut self, input: Input) {
         self.data.push(input);
     }
 
-    pub(crate) fn reverse(&mut self) {
+    pub fn reverse(&mut self) {
         self.data.reverse();
     }
 
-    pub(crate) fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.data.len()
+    }
+
+    pub fn as_u8_vec(&self) -> Vec<u8> {
+        self.data.iter().map(|v| *v as u8).collect()
     }
 }
 
@@ -84,7 +88,7 @@ impl GhostMove {
 
 // -- get_input --
 
-pub(crate) fn get_input(board: &Board, target: &Move, use_finesse: bool, force: bool) -> Inputs {
+pub fn get_input(board: &Board, target: &Move, use_finesse: bool, force: bool) -> Inputs {
     get_input_inner(board, target, use_finesse, force, target.piece())
 }
 
@@ -145,11 +149,9 @@ fn get_input_inner(
         let drop_y = (clz(drop_mask) as i8) - 1;
 
         if drop_y >= 0 {
-            let mut s = m.s;
-            if can_spin {
-                s = SpinType::NoSpin;
-            }
-            let sc = if can_spin { s as usize } else { 0 };
+            // Keep spin state from the predecessor node for lock matching.
+            // Pathfinding targets may require exact spin labels emitted by movegen.
+            let sc = if can_spin { m.s as usize } else { 0 };
             let _rc_idx = canonical_r(p, r) as usize;
 
             // check if this harddrop position == target
@@ -172,9 +174,6 @@ fn get_input_inner(
                 }
             }
         }
-
-        // T-piece: reset spin after harddrop check
-        // (C++ resets queue.front().s but we popped it, so s is local)
 
         // rotate
         if p != Piece::O {

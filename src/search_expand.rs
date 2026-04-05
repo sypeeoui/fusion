@@ -42,6 +42,12 @@ fn coaching_context_bias(previous: CoachingState, next: CoachingState) -> f32 {
     score(next) - score(previous)
 }
 
+#[inline]
+fn chain_signal(combo: u32, b2b: u8) -> f32 {
+    // Reward both immediate combo pressure and preserving/building B2B potential.
+    combo as f32 + b2b as f32 * 0.75
+}
+
 pub(crate) fn gen_and_eval_root(
     state: &GameState,
     piece: Piece,
@@ -123,7 +129,7 @@ pub(crate) fn gen_and_eval_root(
             Some(event) => smallvec![event],
             None => SmallVec::new(),
         };
-        let chain_val = shape_chain_value(next_combo as f32);
+        let chain_val = shape_chain_value(chain_signal(next_combo, next_b2b));
         let combo_context = next_combo as f32 - state.combo as f32;
         let context_mod = shape_context_modifier(
             combo_context + coaching_context_bias(state.coaching, coaching),
@@ -235,7 +241,7 @@ pub(crate) fn expand_node(
         if let Some(event) = clear_event {
             path_clear_events.push(event);
         }
-        let chain_val = shape_chain_value(next_combo as f32);
+        let chain_val = shape_chain_value(chain_signal(next_combo, next_b2b));
         let combo_context = next_combo as f32 - parent.combo as f32;
         let context_mod = shape_context_modifier(
             combo_context + coaching_context_bias(parent.coaching, coaching),
