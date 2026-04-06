@@ -92,6 +92,36 @@ pub fn get_input(board: &Board, target: &Move, use_finesse: bool, force: bool) -
     get_input_inner(board, target, use_finesse, force, target.piece())
 }
 
+/// Return a move variant that is reachable under the active movement rules.
+///
+/// Preference order:
+/// 1) exact move (piece/rotation/x/y/spin)
+/// 2) same placement with no-spin label
+///
+/// Returns None if no reachable variant exists.
+pub fn normalize_lock_move_for_reachability(board: &Board, target: Move, force: bool) -> Option<Move> {
+    let exact = get_input(board, &target, false, force);
+    if exact.size() > 0 {
+        return Some(target);
+    }
+
+    if target.spin() != SpinType::NoSpin {
+        let fallback = Move::new(
+            target.piece(),
+            target.rotation(),
+            target.x(),
+            target.y(),
+            false,
+        );
+        let fallback_inputs = get_input(board, &fallback, false, force);
+        if fallback_inputs.size() > 0 {
+            return Some(fallback);
+        }
+    }
+
+    None
+}
+
 fn get_input_inner(
     board: &Board,
     target: &Move,
@@ -99,12 +129,40 @@ fn get_input_inner(
     force: bool,
     p: Piece,
 ) -> Inputs {
+    if !board.legal_lock_placement(target) {
+        return Inputs::new();
+    }
+
     let cols = board.compute_cols();
-    let cm = CollisionMap::new(&cols, p);
+    let mut cm_exact = [[!0u64; ROTATION_NB]; COL_NB];
+    for x in 0..COL_NB as i32 {
+        for ri in 0..ROTATION_NB as u8 {
+            let r = Rotation::from_u8(ri);
+            if !in_bounds(p, r, x) {
+                cm_exact[x as usize][ri as usize] = !0u64;
+                continue;
+            }
+            let pc = piece_table(p, r);
+            let mut result = cols[x as usize];
+            for k in 0..3 {
+                let cx = x + pc[k].x as i32;
+                let cy = pc[k].y as i32;
+                if cy < 0 {
+                    result |= !((!cols[cx as usize]) << ((-cy) as u32));
+                } else {
+                    result |= cols[cx as usize] >> (cy as u32);
+                }
+            }
+            cm_exact[x as usize][ri as usize] = result;
+        }
+    }
+
+    let cm_get = |x: usize, r: Rotation| -> u64 { cm_exact[x][r as usize] };
     let is_t = p == Piece::T && ACTIVE_RULES.enable_tspin;
     let is_allspin = p != Piece::T && p != Piece::O && ACTIVE_RULES.enable_allspin;
     let can_spin = is_t || is_allspin;
-    let spin_nb = if can_spin { SPIN_NB } else { 1 };
+    let track_spin_state = can_spin && target.spin() != SpinType::NoSpin;
+    let spin_nb = if track_spin_state { SPIN_NB } else { 1 };
 
     // searched[spin][col][rot] bitboard
     let mut searched = vec![vec![vec![0u64; ROTATION_NB]; COL_NB]; spin_nb];
@@ -115,7 +173,7 @@ fn get_input_inner(
     // spawn
     let spawn_y = if force {
         // find lowest valid row >= spawn_row
-        let blocked = cm.get(SPAWN_COL, Rotation::North);
+        let blocked = cm_get(SPAWN_COL, Rotation::North);
         let above_spawn = !bb_low(ACTIVE_RULES.spawn_row);
         let valid = !blocked & above_spawn;
         if valid == 0 {
@@ -123,7 +181,7 @@ fn get_input_inner(
         }
         ctz(valid) as i8
     } else {
-        if cm.get(SPAWN_COL, Rotation::North) & bb(ACTIVE_RULES.spawn_row) != 0 {
+        if cm_get(SPAWN_COL, Rotation::North) & bb(ACTIVE_RULES.spawn_row) != 0 {
             return Inputs::new();
         }
         ACTIVE_RULES.spawn_row as i8
@@ -142,25 +200,22 @@ fn get_input_inner(
         let x = m.x as usize;
         let r = m.r;
         let y = m.y;
-        let rc = canonical_r(p, r);
 
         // harddrop
-        let drop_mask = !((!cm.get(x, rc)) << (63 - y as u32));
+        let drop_mask = !((!cm_get(x, r)) << (63 - y as u32));
         let drop_y = (clz(drop_mask) as i8) - 1;
 
         if drop_y >= 0 {
             // Keep spin state from the predecessor node for lock matching.
             // Pathfinding targets may require exact spin labels emitted by movegen.
-            let sc = if can_spin { m.s as usize } else { 0 };
-            let _rc_idx = canonical_r(p, r) as usize;
+            let sc = if track_spin_state { m.s as usize } else { 0 };
 
             // check if this harddrop position == target
             let target_r = target.rotation();
-            let target_rc = canonical_r(p, target_r);
-            if x as i32 == target.x() && drop_y as i32 == target.y() && rc == target_rc {
+            if x as i32 == target.x() && drop_y as i32 == target.y() && r == target_r {
                 // check spin match
                 let target_spin = target.spin();
-                if !can_spin || sc == target_spin as usize {
+                if !track_spin_state || sc == target_spin as usize {
                     // trace back path
                     let mut result = Inputs::new();
                     result.push(Input::HardDrop);
@@ -191,7 +246,7 @@ fn get_input_inner(
                 };
 
                 let rt = rotate(d, r);
-                let off = canonical_offset(p, r) - canonical_offset(p, rt);
+                let off = Coordinates::new(0, 0);
 
                 let mut kick_buf = [Coordinates::new(0, 0); 6];
                 let kick_count = if d == Direction::Flip {
@@ -222,14 +277,13 @@ fn get_input_inner(
                         continue;
                     }
 
-                    let rt_c = canonical_r(p, rt);
-                    if cm.get(x1u, rt_c) & bb(y1) != 0 {
+                    if cm_get(x1u, rt) & bb(y1) != 0 {
                         continue;
                     }
 
                     // Spin detection
                     let mut s = SpinType::NoSpin;
-                    if is_t {
+                    if track_spin_state && is_t {
                         // T-piece: 3-corner check
                         let ty = y1;
                         let tx = x1;
@@ -264,25 +318,24 @@ fn get_input_inner(
                                 SpinType::Mini
                             };
                         }
-                    } else if is_allspin {
+                    } else if track_spin_state && is_allspin {
                         // Non-T allspin: 4-direction immobility check
-                        let rt_c = canonical_r(p, rt);
-                        let blocked_left = x1u == 0 || cm.get(x1u - 1, rt_c) & bb(y1) != 0;
-                        let blocked_right = x1u >= COL_NB - 1 || cm.get(x1u + 1, rt_c) & bb(y1) != 0;
-                        let blocked_down = y1 <= 0 || cm.get(x1u, rt_c) & bb(y1 - 1) != 0;
-                        let blocked_up = y1 >= ROW_NB as i32 - 1 || cm.get(x1u, rt_c) & bb(y1 + 1) != 0;
+                        let blocked_left = x1u == 0 || cm_get(x1u - 1, rt) & bb(y1) != 0;
+                        let blocked_right = x1u >= COL_NB - 1 || cm_get(x1u + 1, rt) & bb(y1) != 0;
+                        let blocked_down = y1 <= 0 || cm_get(x1u, rt) & bb(y1 - 1) != 0;
+                        let blocked_up = y1 >= ROW_NB as i32 - 1 || cm_get(x1u, rt) & bb(y1 + 1) != 0;
                         if blocked_left && blocked_right && blocked_down && blocked_up {
                             s = SpinType::Mini;
                         }
                     }
 
-                    let s_idx = if can_spin { s as usize } else { 0 };
-                    let rt_c_idx = canonical_r(p, rt) as usize;
+                    let s_idx = if track_spin_state { s as usize } else { 0 };
+                    let rt_idx = rt as usize;
 
-                    if searched[s_idx][x1u][rt_c_idx] & bb(y1) != 0 {
+                    if searched[s_idx][x1u][rt_idx] & bb(y1) != 0 {
                         continue;
                     }
-                    searched[s_idx][x1u][rt_c_idx] |= bb(y1);
+                    searched[s_idx][x1u][rt_idx] |= bb(y1);
 
                     let node_idx = vec.len() as u16;
                     vec.push(PathNode { input, prev: m.i });
@@ -308,8 +361,7 @@ fn get_input_inner(
             if !in_bounds(p, r, x1) {
                 continue;
             }
-            let rc = canonical_r(p, r);
-            if cm.get(x1u, rc) & bb(y as i32) != 0 {
+            if cm_get(x1u, r) & bb(y as i32) != 0 {
                 continue;
             }
 
@@ -318,12 +370,13 @@ fn get_input_inner(
             } else {
                 0
             };
-            let rc_idx = canonical_r(p, r) as usize;
+            let s_idx = if track_spin_state { s_idx } else { 0 };
+            let r_idx = r as usize;
 
-            if searched[s_idx][x1u][rc_idx] & bb(y as i32) != 0 {
+            if searched[s_idx][x1u][r_idx] & bb(y as i32) != 0 {
                 continue;
             }
-            searched[s_idx][x1u][rc_idx] |= bb(y as i32);
+            searched[s_idx][x1u][r_idx] |= bb(y as i32);
 
             let input = if dx < 0 {
                 Input::ShiftLeft
@@ -350,8 +403,7 @@ fn get_input_inner(
                     if x1 < 0 || !in_bounds(p, r, x1) {
                         break;
                     }
-                    let rc = canonical_r(p, r);
-                    if cm.get(x1 as usize, rc) & bb(y as i32) != 0 {
+                    if cm_get(x1 as usize, r) & bb(y as i32) != 0 {
                         break;
                     }
                     x1 += dx as i32;
@@ -367,12 +419,13 @@ fn get_input_inner(
                 } else {
                     0
                 };
-                let rc_idx = canonical_r(p, r) as usize;
+                let s_idx = if track_spin_state { s_idx } else { 0 };
+                let r_idx = r as usize;
 
-                if searched[s_idx][x1u][rc_idx] & bb(y as i32) != 0 {
+                if searched[s_idx][x1u][r_idx] & bb(y as i32) != 0 {
                     continue;
                 }
-                searched[s_idx][x1u][rc_idx] |= bb(y as i32);
+                searched[s_idx][x1u][r_idx] |= bb(y as i32);
 
                 let input = if dx < 0 {
                     Input::DasLeft
@@ -394,16 +447,16 @@ fn get_input_inner(
         // softdrop
         let y1 = y - 1;
         if y1 >= 0 {
-            let rc = canonical_r(p, r);
-            if cm.get(x, rc) & bb(y1 as i32) == 0 {
+            if cm_get(x, r) & bb(y1 as i32) == 0 {
                 let s_idx = if can_spin {
                     SpinType::NoSpin as usize
                 } else {
                     0
                 };
-                let rc_idx = rc as usize;
-                if searched[s_idx][x][rc_idx] & bb(y1 as i32) == 0 {
-                    searched[s_idx][x][rc_idx] |= bb(y1 as i32);
+                let s_idx = if track_spin_state { s_idx } else { 0 };
+                let r_idx = r as usize;
+                if searched[s_idx][x][r_idx] & bb(y1 as i32) == 0 {
+                    searched[s_idx][x][r_idx] |= bb(y1 as i32);
                     let node_idx = vec.len() as u16;
                     vec.push(PathNode {
                         input: Input::SoftDrop,
@@ -445,5 +498,52 @@ mod tests {
         let inputs = get_input(&board, &target, false, false);
         assert!(!inputs.data.is_empty());
         assert_eq!(*inputs.data.last().unwrap(), Input::HardDrop);
+    }
+
+    #[test]
+    fn test_normalize_reachability_falls_back_from_spin_label() {
+        let board = Board::new();
+        let spin_labeled = Move::new_allspin_mini(Piece::S, Rotation::North, SPAWN_COL as i32, 0);
+
+        let normalized = normalize_lock_move_for_reachability(&board, spin_labeled, false)
+            .expect("expected reachable fallback move");
+
+        assert_eq!(normalized.spin(), SpinType::NoSpin);
+        assert_eq!(normalized.piece(), Piece::S);
+        assert_eq!(normalized.rotation(), Rotation::North);
+        assert_eq!(normalized.x(), SPAWN_COL as i32);
+        assert_eq!(normalized.y(), 0);
+    }
+
+    #[test]
+    fn test_normalize_reachability_rejects_unreachable_lock() {
+        let board = Board::new();
+        let floating = Move::new(Piece::I, Rotation::North, SPAWN_COL as i32, 3, false);
+
+        let normalized = normalize_lock_move_for_reachability(&board, floating, false);
+        assert!(normalized.is_none());
+    }
+
+    #[test]
+    fn test_get_input_requires_exact_rotation_for_group2_piece() {
+        let mut board = Board::new();
+        board.rows[2] |= 1u16 << 3;
+        board.cols[3] |= 1u64 << 2;
+
+        let east = Move::new(Piece::S, Rotation::East, 4, 1, false);
+        let west = Move::new(Piece::S, Rotation::West, 4, 1, false);
+
+        assert!(board.obstructed_move(&west), "west setup must be obstructed");
+        assert!(!board.obstructed_move(&east), "east setup must remain unobstructed");
+
+        let east_inputs = get_input(&board, &east, false, false);
+        assert!(east_inputs.size() > 0, "east placement should be reachable");
+
+        let west_inputs = get_input(&board, &west, false, false);
+        assert_eq!(
+            west_inputs.size(),
+            0,
+            "west placement should not alias to east reachability"
+        );
     }
 }

@@ -9,7 +9,8 @@ use crate::eval::{self, evaluate, EvalWeights};
 use crate::header::*;
 use crate::move_buffer::MoveBuffer;
 use crate::movegen::generate;
-use crate::search::{find_best_move, find_best_move_with_scores_forced, SearchConfig};
+use crate::search::SearchConfig;
+use crate::search::find_best_move_with_scores_forced;
 use crate::state::{ClearType, GameState, TransitionObservation};
 use crate::wasm_board::JsBoard;
 use crate::pathfinder;
@@ -224,36 +225,25 @@ pub fn evaluate_position_wasm(
         ) = match &full_result {
             Some(full) => {
                 let sr = &full.best;
-                let best_search_score = sr.score;
+                let (best_move, best_hold_used, best_search_score) =
+                    best_reachable_root_move(&state.board, &full.root_scores)?;
 
-                let move_json = if !post_board_clone.obstructed_move(&sr.best_move) {
-                    MoveResultJson {
-                        piece: piece_to_external(sr.best_move.piece()),
-                        rotation: sr.best_move.rotation() as u8,
-                        x: sr.best_move.x() as i8,
-                        y: sr.best_move.y() as i8,
-                        score: best_search_score,
-                        spin: sr.best_move.spin() as u8,
-                        hold_used: sr.hold_used,
-                    }
-                } else {
-                    MoveResultJson {
-                        piece: piece_to_external(sr.best_move.piece()),
-                        rotation: 0,
-                        x: 0,
-                        y: 0,
-                        score: best_search_score,
-                        spin: 0,
-                        hold_used: sr.hold_used,
-                    }
+                let move_json = MoveResultJson {
+                    piece: piece_to_external(best_move.piece()),
+                    rotation: best_move.rotation() as u8,
+                    x: best_move.x() as i8,
+                    y: best_move.y() as i8,
+                    score: best_search_score,
+                    spin: best_move.spin() as u8,
+                    hold_used: best_hold_used,
                 };
 
                 // Look up actual move score in root_scores
                 let actual_search_score = actual_move_raw.and_then(|raw| {
                     full.root_scores
                         .iter()
-                        .find(|(m, _)| m.raw() == raw)
-                        .map(|(_, s)| *s)
+                        .find(|(m, _, _)| m.raw() == raw)
+                        .map(|(_, _, s)| *s)
                 });
 
                 let (loss, sev) = if let Some(actual_score) = actual_search_score {
@@ -293,17 +283,38 @@ pub fn evaluate_position_wasm(
                 };
 
                 // Convert principal variation to recommended path for coaching
-                let recommended_path: Vec<MoveResultJson> = sr.pv.iter().map(|m| {
-                    MoveResultJson {
-                        piece: piece_to_external(m.piece()),
-                        rotation: m.rotation() as u8,
-                        x: m.x() as i8,
-                        y: m.y() as i8,
+                let recommended_path: Vec<MoveResultJson> = if sr.best_move.raw() == best_move.raw() {
+                    sr.pv
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(idx, m)| {
+                            let mv = if idx == 0 {
+                                normalize_root_move_for_reachability(&state.board, *m)
+                            } else {
+                                Some(*m)
+                            };
+                            mv.map(|value| MoveResultJson {
+                                piece: piece_to_external(value.piece()),
+                                rotation: value.rotation() as u8,
+                                x: value.x() as i8,
+                                y: value.y() as i8,
+                                score: 0.0,
+                                spin: value.spin() as u8,
+                                hold_used: false,
+                            })
+                        })
+                        .collect()
+                } else {
+                    vec![MoveResultJson {
+                        piece: piece_to_external(best_move.piece()),
+                        rotation: best_move.rotation() as u8,
+                        x: best_move.x() as i8,
+                        y: best_move.y() as i8,
                         score: 0.0,
-                        spin: m.spin() as u8,
+                        spin: best_move.spin() as u8,
                         hold_used: false,
-                    }
-                }).collect();
+                    }]
+                };
 
                 (
                     best_search_score,
@@ -419,15 +430,16 @@ pub fn find_best_move_wasm(board: &JsBoard, piece: u8, frame: JsValue) -> JsValu
         config.attack_config.pc_garbage = 0;
         config.attack_config.pc_b2b = 0;
 
-        let search_result = find_best_move(&state, &config, &weights)?;
+        let full = find_best_move_with_scores_forced(&state, &config, &weights, None)?;
+        let (best_move, hold_used, score) = best_reachable_root_move(&state.board, &full.root_scores)?;
         Some(MoveResultJson {
-            piece: piece_to_external(search_result.best_move.piece()),
-            rotation: search_result.best_move.rotation() as u8,
-            x: search_result.best_move.x() as i8,
-            y: search_result.best_move.y() as i8,
-            score: search_result.score,
-            spin: search_result.best_move.spin() as u8,
-            hold_used: search_result.hold_used,
+            piece: piece_to_external(best_move.piece()),
+            rotation: best_move.rotation() as u8,
+            x: best_move.x() as i8,
+            y: best_move.y() as i8,
+            score,
+            spin: best_move.spin() as u8,
+            hold_used,
         })
     }));
 
@@ -450,18 +462,36 @@ pub fn get_all_moves_wasm(board: &JsBoard, piece: u8) -> JsValue {
     let all_moves: Vec<MoveResultJson> = moves
         .as_slice()
         .iter()
-        .map(|m| MoveResultJson {
-            piece: piece_to_external(m.piece()),
-            rotation: m.rotation() as u8,
-            x: m.x() as i8,
-            y: m.y() as i8,
-            score: 0.0,
-            spin: m.spin() as u8,
-            hold_used: false,
+        .filter_map(|m| {
+            normalize_root_move_for_reachability(&board.inner, *m).map(|value| MoveResultJson {
+                piece: piece_to_external(value.piece()),
+                rotation: value.rotation() as u8,
+                x: value.x() as i8,
+                y: value.y() as i8,
+                score: 0.0,
+                spin: value.spin() as u8,
+                hold_used: false,
+            })
         })
         .collect();
 
     to_js(&all_moves)
+}
+
+fn normalize_root_move_for_reachability(board: &crate::board::Board, mv: Move) -> Option<Move> {
+    pathfinder::normalize_lock_move_for_reachability(board, mv, false)
+}
+
+fn best_reachable_root_move(
+    board: &crate::board::Board,
+    root_scores: &[(Move, bool, f32)],
+) -> Option<(Move, bool, f32)> {
+    for (mv, hold_used, score) in root_scores {
+        if let Some(reachable) = normalize_root_move_for_reachability(board, *mv) {
+            return Some((reachable, *hold_used, *score));
+        }
+    }
+    None
 }
 
 #[wasm_bindgen(js_name = "simulate_coaching_sequence")]
@@ -489,6 +519,9 @@ pub fn simulate_coaching_sequence_wasm(board: &JsBoard, path: JsValue) -> JsValu
             }
 
             let inputs = pathfinder::get_input(&current_board, &m, false, false);
+            if inputs.size() == 0 {
+                break;
+            }
             let input_data: Vec<u8> = inputs.data.iter().map(|i| *i as u8).collect();
 
             // Detect clearing rows BEFORE do_move mutates the board

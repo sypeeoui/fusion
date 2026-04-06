@@ -212,6 +212,10 @@ async fn find_best_move_handler(
     })?;
 
     let best = &full.best;
+    let (best_move_reachable, best_hold_used, best_score) =
+        best_reachable_root_move(&game_state.board, &full.root_scores).ok_or_else(|| {
+            err("no reachable root move found")
+        })?;
     let include_candidates = req.include_candidates.unwrap_or(false);
     let candidates = if include_candidates {
         let temperature = req.candidate_temperature.unwrap_or(1.0).max(0.001);
@@ -230,25 +234,30 @@ async fn find_best_move_handler(
         None
     };
 
-    let normalized_best = normalize_root_move_for_reachability(&game_state.board, best.best_move);
-
-    let response = SearchResponse {
-        best_move: move_to_json(normalized_best, best.hold_used, Some(best.score), None),
-        score: best.score,
-        hold_used: best.hold_used,
-        pv: best
+    let normalized_best = best_move_reachable;
+    let pv = if best.best_move.raw() == best_move_reachable.raw() {
+        best
             .pv
             .iter()
             .enumerate()
-            .map(|(idx, m)| {
+            .filter_map(|(idx, m)| {
                 let mv = if idx == 0 {
                     normalize_root_move_for_reachability(&game_state.board, *m)
                 } else {
-                    *m
+                    Some(*m)
                 };
-                move_to_json(mv, false, None, None)
+                mv.map(|value| move_to_json(value, false, None, None))
             })
-            .collect(),
+            .collect()
+    } else {
+        vec![move_to_json(best_move_reachable, false, None, None)]
+    };
+
+    let response = SearchResponse {
+        best_move: move_to_json(normalized_best, best_hold_used, Some(best_score), None),
+        score: best_score,
+        hold_used: best_hold_used,
+        pv,
         candidates,
     };
 
@@ -267,9 +276,9 @@ async fn get_all_moves_handler(
     let moves = buffer
         .as_slice()
         .iter()
-        .map(|m| {
-            let normalized = normalize_root_move_for_reachability(&board, *m);
-            move_to_json(normalized, false, None, None)
+        .filter_map(|m| {
+            normalize_root_move_for_reachability(&board, *m)
+                .map(|normalized| move_to_json(normalized, false, None, None))
         })
         .collect();
 
@@ -342,7 +351,10 @@ async fn evaluate_position_handler(
             })?;
 
     let sr = &full_result.best;
-    let best_score = sr.score;
+    let (best_move_reachable, best_hold_used, best_score) =
+        best_reachable_root_move(&game_state.board, &full_result.root_scores).ok_or_else(|| {
+            err("no reachable root move found during evaluation")
+        })?;
     let actual_search_score = actual_move_raw.and_then(|raw| {
         full_result
             .root_scores
@@ -394,12 +406,7 @@ async fn evaluate_position_handler(
         eval_before,
         eval_after,
         best_eval: best_score,
-        best_move: move_to_json(
-            normalize_root_move_for_reachability(&game_state.board, sr.best_move),
-            sr.hold_used,
-            Some(sr.score),
-            None,
-        ),
+        best_move: move_to_json(best_move_reachable, best_hold_used, Some(best_score), None),
         eval_loss,
         severity: severity_to_string(severity).to_string(),
         meter_value: normalize_meter(eval_after),
@@ -411,19 +418,22 @@ async fn evaluate_position_handler(
         path_attack: full_result.path_attack,
         path_chain: full_result.path_chain,
         path_context: full_result.path_context,
-        recommended_path: sr
-            .pv
-            .iter()
-            .enumerate()
-            .map(|(idx, m)| {
-                let mv = if idx == 0 {
-                    normalize_root_move_for_reachability(&game_state.board, *m)
-                } else {
-                    *m
-                };
-                move_to_json(mv, false, None, None)
-            })
-            .collect(),
+        recommended_path: if sr.best_move.raw() == best_move_reachable.raw() {
+            sr.pv
+                .iter()
+                .enumerate()
+                .filter_map(|(idx, m)| {
+                    let mv = if idx == 0 {
+                        normalize_root_move_for_reachability(&game_state.board, *m)
+                    } else {
+                        Some(*m)
+                    };
+                    mv.map(|value| move_to_json(value, false, None, None))
+                })
+                .collect()
+        } else {
+            vec![move_to_json(best_move_reachable, false, None, None)]
+        },
         insight_tags,
     };
 
@@ -610,25 +620,8 @@ fn move_to_json(mv: Move, hold_used: bool, score: Option<f32>, probability: Opti
     }
 }
 
-fn normalize_root_move_for_reachability(board: &Board, mv: Move) -> Move {
-    if mv.spin() == SpinType::NoSpin {
-        return mv;
-    }
-
-    // If exact spin-labeled move is reachable, keep it.
-    let exact = pathfinder::get_input(board, &mv, false, false);
-    if exact.size() > 0 {
-        return mv;
-    }
-
-    // Otherwise, fall back to no-spin label for the same placement when reachable.
-    let fallback = Move::new(mv.piece(), mv.rotation(), mv.x(), mv.y(), false);
-    let fallback_inputs = pathfinder::get_input(board, &fallback, false, false);
-    if fallback_inputs.size() > 0 {
-        return fallback;
-    }
-
-    mv
+fn normalize_root_move_for_reachability(board: &Board, mv: Move) -> Option<Move> {
+    pathfinder::normalize_lock_move_for_reachability(board, mv, false)
 }
 
 fn root_scores_to_candidates(
@@ -657,16 +650,27 @@ fn root_scores_to_candidates(
 
     top.iter()
         .zip(exps.iter())
-        .map(|((mv, hold_used, score), exp)| {
+        .filter_map(|((mv, hold_used, score), exp)| {
             let probability = if sum > 0.0 { *exp / sum } else { 0.0 };
-            move_to_json(
-                normalize_root_move_for_reachability(board, *mv),
-                *hold_used,
-                Some(*score),
-                Some(probability),
-            )
+            normalize_root_move_for_reachability(board, *mv).map(|normalized| {
+                move_to_json(
+                    normalized,
+                    *hold_used,
+                    Some(*score),
+                    Some(probability),
+                )
+            })
         })
         .collect()
+}
+
+fn best_reachable_root_move(board: &Board, root_scores: &[(Move, bool, f32)]) -> Option<(Move, bool, f32)> {
+    for (mv, hold_used, score) in root_scores {
+        if let Some(reachable) = normalize_root_move_for_reachability(board, *mv) {
+            return Some((reachable, *hold_used, *score));
+        }
+    }
+    None
 }
 
 fn severity_to_string(v: analysis::Severity) -> &'static str {
