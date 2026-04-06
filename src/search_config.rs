@@ -55,7 +55,7 @@ pub struct SearchResult {
 
 pub struct SearchResultFull {
     pub best: SearchResult,
-    pub root_scores: Vec<(Move, f32)>,
+    pub root_scores: Vec<(Move, bool, f32)>,
     pub position_complexity: f32,
     pub board_score: f32,
     pub attack_score: f32,

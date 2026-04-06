@@ -17,10 +17,10 @@ pub const MAX_INPUTS: usize = 64;
 #[repr(u8)]
 pub enum Input {
     NoInput = 0,
-    ShiftLeft,
     ShiftRight,
-    DasLeft,
+    ShiftLeft,
     DasRight,
+    DasLeft,
     RotateCw,
     RotateCcw,
     RotateFlip,
@@ -95,7 +95,7 @@ pub fn get_input(board: &Board, target: &Move, use_finesse: bool, force: bool) -
 fn get_input_inner(
     board: &Board,
     target: &Move,
-    use_finesse: bool,
+    _use_finesse: bool,
     force: bool,
     p: Piece,
 ) -> Inputs {
@@ -154,7 +154,6 @@ fn get_input_inner(
                 s = SpinType::NoSpin;
             }
             let sc = if can_spin { s as usize } else { 0 };
-            let _rc_idx = canonical_r(p, r) as usize;
 
             // check if this harddrop position == target
             let target_r = target.rotation();
@@ -176,9 +175,6 @@ fn get_input_inner(
                 }
             }
         }
-
-        // T-piece: reset spin after harddrop check
-        // (C++ resets queue.front().s but we popped it, so s is local)
 
         // rotate
         if p != Piece::O {
@@ -202,7 +198,7 @@ fn get_input_inner(
                 let kick_count = if d == Direction::Flip {
                     let ki = kick_180_index(p);
                     let arr = &KICKS_180[ki][r as usize];
-                    let n = if !ACTIVE_RULES.srs_plus { 2 } else { arr.len() };
+                    let n = if p == Piece::I { 2 } else { arr.len() };
                     kick_buf[..n].copy_from_slice(&arr[..n]);
                     n
                 } else {
@@ -249,10 +245,10 @@ fn get_input_inner(
                         if corners >= 3 {
                             // face corner check for FULL vs MINI
                             let face = match rt {
-                                Rotation::North => [(0i32, -1i32), (0, 1)],
-                                Rotation::East => [(-1, 0), (1, 0)],
-                                Rotation::South => [(0, -1), (0, 1)],
-                                Rotation::West => [(-1, 0), (1, 0)],
+                                Rotation::North => [(-1i32, 1i32), (1, 1)],
+                                Rotation::East => [(1, 1), (1, -1)],
+                                Rotation::South => [(1, -1), (-1, -1)],
+                                Rotation::West => [(-1, -1), (-1, 1)],
                             };
                             let mut face_filled = 0u32;
                             for &(dx, dy) in &face {
@@ -263,7 +259,7 @@ fn get_input_inner(
                                     face_filled += 1;
                                 }
                             }
-                            s = if face_filled >= 2 || k == 4 {
+                            s = if face_filled >= 2 {
                                 SpinType::Full
                             } else {
                                 SpinType::Mini
@@ -306,122 +302,122 @@ fn get_input_inner(
         // shift
         for dx in [-1i8, 1i8] {
             let x1 = m.x as i32 + dx as i32;
-            if x1 < 0 {
-                continue;
-            }
-            let x1u = x1 as usize;
-            if !in_bounds(p, r, x1) {
-                continue;
-            }
-            let rc = canonical_r(p, r);
-            if cm.get(x1u, rc) & bb(y as i32) != 0 {
-                continue;
-            }
-
-            let s_idx = if can_spin {
-                SpinType::NoSpin as usize
-            } else {
-                0
-            };
-            let rc_idx = canonical_r(p, r) as usize;
-
-            if searched[s_idx][x1u][rc_idx] & bb(y as i32) != 0 {
-                continue;
-            }
-            searched[s_idx][x1u][rc_idx] |= bb(y as i32);
-
-            let input = if dx < 0 {
-                Input::ShiftLeft
-            } else {
-                Input::ShiftRight
-            };
-            let node_idx = vec.len() as u16;
-            vec.push(PathNode { input, prev: m.i });
-            queue.push_back(GhostMove {
-                r,
-                x: x1 as i8,
-                y,
-                i: node_idx,
-                s: SpinType::NoSpin,
-            });
-        }
-
-        // DAS (finesse)
-        if use_finesse {
-            for dx in [-1i8, 1i8] {
-                let mut x1 = m.x as i32 + dx as i32;
-                // slide to wall
-                loop {
-                    if x1 < 0 || !in_bounds(p, r, x1) {
-                        break;
-                    }
-                    let rc = canonical_r(p, r);
-                    if cm.get(x1 as usize, rc) & bb(y as i32) != 0 {
-                        break;
-                    }
-                    x1 += dx as i32;
-                }
-                x1 -= dx as i32; // back to last valid
-
-                if x1 == m.x as i32 {
-                    continue;
-                }
+            if x1 >= 0 && in_bounds(p, r, x1) {
                 let x1u = x1 as usize;
-                let s_idx = if can_spin {
-                    SpinType::NoSpin as usize
-                } else {
-                    0
-                };
-                let rc_idx = canonical_r(p, r) as usize;
+                let rc = canonical_r(p, r);
+                if cm.get(x1u, rc) & bb(y as i32) == 0 {
+                    let s_idx = if can_spin {
+                        SpinType::NoSpin as usize
+                    } else {
+                        0
+                    };
+                    let rc_idx = rc as usize;
 
-                if searched[s_idx][x1u][rc_idx] & bb(y as i32) != 0 {
-                    continue;
+                    if searched[s_idx][x1u][rc_idx] & bb(y as i32) == 0 {
+                        searched[s_idx][x1u][rc_idx] |= bb(y as i32);
+
+                        let input = if dx < 0 {
+                            Input::ShiftLeft
+                        } else {
+                            Input::ShiftRight
+                        };
+                        let node_idx = vec.len() as u16;
+                        vec.push(PathNode { input, prev: m.i });
+                        queue.push_back(GhostMove {
+                            r,
+                            x: x1 as i8,
+                            y,
+                            i: node_idx,
+                            s: SpinType::NoSpin,
+                        });
+                    }
                 }
-                searched[s_idx][x1u][rc_idx] |= bb(y as i32);
-
-                let input = if dx < 0 {
-                    Input::DasLeft
-                } else {
-                    Input::DasRight
-                };
-                let node_idx = vec.len() as u16;
-                vec.push(PathNode { input, prev: m.i });
-                queue.push_back(GhostMove {
-                    r,
-                    x: x1 as i8,
-                    y,
-                    i: node_idx,
-                    s: SpinType::NoSpin,
-                });
             }
-        }
 
-        // softdrop
-        let y1 = y - 1;
-        if y1 >= 0 {
+            // DAS
+            let mut x_das = m.x;
+            let mut das_moved = false;
             let rc = canonical_r(p, r);
-            if cm.get(x, rc) & bb(y1 as i32) == 0 {
+            while in_bounds(p, r, x_das as i32 + dx as i32) {
+                let next_x = (x_das as i32 + dx as i32) as usize;
+                if cm.get(next_x, rc) & bb(y as i32) != 0 {
+                    break;
+                }
+                x_das = next_x as i8;
+                das_moved = true;
+            }
+            if das_moved {
+                let x_das_u = x_das as usize;
                 let s_idx = if can_spin {
                     SpinType::NoSpin as usize
                 } else {
                     0
                 };
                 let rc_idx = rc as usize;
-                if searched[s_idx][x][rc_idx] & bb(y1 as i32) == 0 {
-                    searched[s_idx][x][rc_idx] |= bb(y1 as i32);
+                if searched[s_idx][x_das_u][rc_idx] & bb(y as i32) == 0 {
+                    searched[s_idx][x_das_u][rc_idx] |= bb(y as i32);
+                    let input = if dx < 0 {
+                        Input::DasLeft
+                    } else {
+                        Input::DasRight
+                    };
                     let node_idx = vec.len() as u16;
-                    vec.push(PathNode {
-                        input: Input::SoftDrop,
-                        prev: m.i,
-                    });
+                    vec.push(PathNode { input, prev: m.i });
                     queue.push_back(GhostMove {
                         r,
-                        x: m.x,
-                        y: y1,
+                        x: x_das,
+                        y,
                         i: node_idx,
                         s: SpinType::NoSpin,
                     });
                 }
+            }
+        }
+
+        // softdrop
+        let mut y_sd = y;
+        let rc = canonical_r(p, r);
+        while y_sd > 0 {
+            let next_y = y_sd - 1;
+            if cm.get(x, rc) & bb(next_y as i32) != 0 {
+                break;
+            }
+            
+            let s_idx = if can_spin {
+                SpinType::NoSpin as usize
+            } else {
+                0
+            };
+            let rc_idx = rc as usize;
+            
+            // For SoftDrop, we only want to add a node for the TARGET position in the BFS,
+            // but we want the path to include all intermediate SoftDrop steps.
+            // Wait, BFS finds the SHORTEST path. If we want to reach a low Y,
+            // we should allow the BFS to see each intermediate Y as a reachable state.
+            
+            y_sd = next_y;
+            
+            if searched[s_idx][x][rc_idx] & bb(y_sd as i32) == 0 {
+                searched[s_idx][x][rc_idx] |= bb(y_sd as i32);
+                let node_idx = vec.len() as u16;
+                vec.push(PathNode {
+                    input: Input::SoftDrop,
+                    prev: m.i,
+                });
+                queue.push_back(GhostMove {
+                    r,
+                    x: m.x,
+                    y: y_sd,
+                    i: node_idx,
+                    s: SpinType::NoSpin,
+                });
+                
+                // We DON'T break here, because we want to explore deeper softdrops 
+                // but each one will be its own node in the BFS.
+                // Wait, if we don't break, the BFS will explore them anyway 
+                // when it pops the next GhostMove. 
+                // So we SHOULD break here after adding the NEXT row.
+                break; 
             }
         }
     }

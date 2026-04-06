@@ -95,7 +95,7 @@ mod tests {
         let tracker = BagTracker::new();
         let remaining = tracker.remaining();
         assert_eq!(remaining.len(), 7);
-        assert_eq!(remaining, vec![I, O, T, L, J, S, Z]);
+        assert_eq!(remaining, vec![I, O, T, S, Z, J, L]);
     }
 
     #[test]
@@ -111,9 +111,9 @@ mod tests {
         assert!(!remaining.contains(&T));
         assert!(!remaining.contains(&S));
         assert!(remaining.contains(&O));
-        assert!(remaining.contains(&L));
-        assert!(remaining.contains(&J));
         assert!(remaining.contains(&Z));
+        assert!(remaining.contains(&J));
+        assert!(remaining.contains(&L));
     }
 
     #[test]
@@ -139,12 +139,12 @@ mod tests {
         tracker.consume(I);
         tracker.consume(O);
         tracker.consume(T);
-        tracker.consume(L);
-        tracker.consume(J);
+        tracker.consume(S);
+        tracker.consume(Z);
 
         let remaining = tracker.remaining();
         assert_eq!(remaining.len(), 2);
-        assert_eq!(remaining, vec![S, Z]);
+        assert_eq!(remaining, vec![J, L]);
     }
 
     #[test]
@@ -153,10 +153,10 @@ mod tests {
         tracker.consume(I);
         tracker.consume(O);
 
-        let queue = vec![T, L, J];
+        let queue = vec![T, S, Z];
         let remaining = tracker.predict_next(&queue);
         assert_eq!(remaining.len(), 2);
-        assert_eq!(remaining, vec![S, Z]);
+        assert_eq!(remaining, vec![J, L]);
     }
 
     #[test]
@@ -176,16 +176,16 @@ mod tests {
 
     #[test]
     fn test_extend_queue_adds_predicted_pieces() {
-        // Setup: hold=I, current=O, queue=[T, L, J]
-        // That's 5 pieces consumed from the bag, 2 remaining (S, Z)
-        let queue = vec![T, L, J];
+        // Setup: hold=I, current=O, queue=[T, S, Z]
+        // That's 5 pieces consumed from the bag, 2 remaining (J, L)
+        let queue = vec![T, S, Z];
         let extended = extend_queue(&queue, O, Some(I));
 
-        // Original queue + predicted S, Z
+        // Original queue + predicted J, L
         assert_eq!(extended.len(), 5);
-        assert_eq!(&extended[..3], &[T, L, J]);
-        assert!(extended[3..].contains(&S));
-        assert!(extended[3..].contains(&Z));
+        assert_eq!(&extended[..3], &[T, S, Z]);
+        assert!(extended[3..].contains(&J));
+        assert!(extended[3..].contains(&L));
     }
 
     #[test]
@@ -201,50 +201,50 @@ mod tests {
 
     #[test]
     fn test_extend_queue_single_remaining() {
-        // hold=I, current=O, queue=[T, L, J, S]
-        // That's 6 pieces consumed, 1 remaining (Z) — guaranteed
-        let queue = vec![T, L, J, S];
+        // hold=I, current=O, queue=[T, S, Z, J]
+        // That's 6 pieces consumed, 1 remaining (L) — guaranteed
+        let queue = vec![T, S, Z, J];
         let extended = extend_queue(&queue, O, Some(I));
 
         assert_eq!(extended.len(), 5);
-        assert_eq!(&extended[..4], &[T, L, J, S]);
-        assert_eq!(extended[4], Z);
+        assert_eq!(&extended[..4], &[T, S, Z, J]);
+        assert_eq!(extended[4], L);
     }
 
     #[test]
     fn test_extend_queue_no_hold() {
-        // No hold, current=I, queue=[O, T, L, J]
-        // That's 5 pieces consumed, 2 remaining (S, Z)
-        let queue = vec![O, T, L, J];
+        // No hold, current=I, queue=[O, T, S, Z]
+        // That's 5 pieces consumed, 2 remaining (J, L)
+        let queue = vec![O, T, S, Z];
         let extended = extend_queue(&queue, I, None);
 
         assert_eq!(extended.len(), 6);
-        assert_eq!(&extended[..4], &[O, T, L, J]);
-        assert!(extended[4..].contains(&S));
-        assert!(extended[4..].contains(&Z));
+        assert_eq!(&extended[..4], &[O, T, S, Z]);
+        assert!(extended[4..].contains(&J));
+        assert!(extended[4..].contains(&L));
     }
 
     #[test]
     fn test_extend_queue_full_bag_no_prediction() {
-        // hold=I, current=O, queue=[T, L, J, S, Z]
+        // hold=I, current=O, queue=[T, S, Z, J, L]
         // That's all 7 consumed — bag complete, nothing remaining
-        let queue = vec![T, L, J, S, Z];
+        let queue = vec![T, S, Z, J, L];
         let extended = extend_queue(&queue, O, Some(I));
 
         // No prediction (0 remaining)
-        assert_eq!(extended, vec![T, L, J, S, Z]);
+        assert_eq!(extended, vec![T, S, Z, J, L]);
     }
 
     #[test]
     fn test_extend_queue_cross_bag_boundary() {
-        // hold=I, current=O, queue=[T, L, J, S, Z, I]
+        // hold=I, current=O, queue=[T, S, Z, J, L, I]
         // First 7 fill bag 1, then I starts bag 2 → 6 remaining in new bag
         // Too many to predict
-        let queue = vec![T, L, J, S, Z, I];
+        let queue = vec![T, S, Z, J, L, I];
         let extended = extend_queue(&queue, O, Some(I));
 
         // No prediction appended (6 remaining in new bag)
-        assert_eq!(extended, vec![T, L, J, S, Z, I]);
+        assert_eq!(extended, vec![T, S, Z, J, L, I]);
     }
 
     #[test]

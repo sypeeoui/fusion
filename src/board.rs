@@ -42,11 +42,13 @@ impl Board {
 
     pub fn obstructed_move(&self, m: &Move) -> bool {
         let pc = m.cells();
-        let off = Coordinates::new(m.x(), m.y());
-        self.obstructed_coord(&off)
-            || self.obstructed_coord(&(pc[0] + off))
-            || self.obstructed_coord(&(pc[1] + off))
-            || self.obstructed_coord(&(pc[2] + off))
+        let x = m.x();
+        let y = m.y();
+        
+        self.obstructed(x, y)
+            || self.obstructed(pc[0].x as i32 + x, pc[0].y as i32 + y)
+            || self.obstructed(pc[1].x as i32 + x, pc[1].y as i32 + y)
+            || self.obstructed(pc[2].x as i32 + x, pc[2].y as i32 + y)
     }
 
     pub fn legal_lock_placement(&self, m: &Move) -> bool {
@@ -55,12 +57,21 @@ impl Board {
         }
 
         let pc = m.cells();
-        let off = Coordinates::new(m.x(), m.y());
-        let cells = [off, pc[0] + off, pc[1] + off, pc[2] + off];
-
-        cells
-            .iter()
-            .any(|c| self.obstructed(c.x as i32, c.y as i32 - 1))
+        let x = m.x();
+        let y = m.y();
+        
+        // Supported if ANY mino is on the floor or has a block below it
+        if !is_ok_y(y - 1) || self.occupied(x, y - 1) {
+            return true;
+        }
+        for i in 0..3 {
+            let tx = pc[i].x as i32 + x;
+            let ty = pc[i].y as i32 + y;
+            if !is_ok_y(ty - 1) || self.occupied(tx, ty - 1) {
+                return true;
+            }
+        }
+        false
     }
 
     /// Build a column bitboard on-the-fly from row data.

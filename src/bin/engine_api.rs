@@ -345,11 +345,14 @@ async fn evaluate_position_handler(
     let sr = &full_result.best;
     let best_score = sr.score;
     let actual_search_score = actual_move_raw.and_then(|raw| {
+        let hu = frame.hold_used.unwrap_or_else(|| {
+            game_state.infer_hold_used_for_piece(actual_move_for_search.unwrap().piece())
+        });
         full_result
             .root_scores
             .iter()
-            .find(|(m, _)| m.raw() == raw)
-            .map(|(_, score)| *score)
+            .find(|(m, root_hu, _)| m.raw() == raw && *root_hu == hu)
+            .map(|(_, _, score)| *score)
     });
 
     let (eval_loss, severity) = if let Some(actual_score) = actual_search_score {
@@ -631,7 +634,7 @@ fn normalize_root_move_for_reachability(board: &Board, mv: Move) -> Move {
 }
 
 fn root_scores_to_candidates(
-    root_scores: &[(Move, f32)],
+    root_scores: &[(Move, bool, f32)],
     temperature: f32,
     limit: usize,
     board: &Board,
@@ -643,12 +646,12 @@ fn root_scores_to_candidates(
 
     let max_score = top
         .iter()
-        .map(|(_, score)| *score)
+        .map(|(_, _, score)| *score)
         .fold(f32::NEG_INFINITY, f32::max);
 
     let mut exps = Vec::with_capacity(top.len());
     let mut sum = 0.0f32;
-    for (_, score) in top {
+    for (_, _, score) in top {
         let value = ((score - max_score) / temperature).exp();
         exps.push(value);
         sum += value;
@@ -656,11 +659,11 @@ fn root_scores_to_candidates(
 
     top.iter()
         .zip(exps.iter())
-        .map(|((mv, score), exp)| {
+        .map(|((mv, hu, score), exp)| {
             let probability = if sum > 0.0 { *exp / sum } else { 0.0 };
             move_to_json(
                 normalize_root_move_for_reachability(board, *mv),
-                false,
+                *hu,
                 Some(*score),
                 Some(probability),
             )

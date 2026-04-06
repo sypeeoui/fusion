@@ -17,10 +17,10 @@ const fn piece_from_index(p: usize) -> Piece {
         0 => Piece::I,
         1 => Piece::O,
         2 => Piece::T,
-        3 => Piece::L,
-        4 => Piece::J,
-        5 => Piece::S,
-        6 => Piece::Z,
+        3 => Piece::S,
+        4 => Piece::Z,
+        5 => Piece::J,
+        6 => Piece::L,
         _ => Piece::I,
     }
 }
@@ -202,7 +202,7 @@ fn generate_inner<const P: usize, const CHECK_SPIN: bool>(
                     let r1 = rotate(d, r);
                     let rc = canonical_r(p, r1);
                     let off = canonical_offset(p, r) - canonical_offset(p, r1);
-                    let n = if !ACTIVE_RULES.srs_plus && kicks.len() == 6 {
+                    let n = if kicks.len() == 6 && p == Piece::I {
                         2
                     } else {
                         kicks.len()
@@ -238,14 +238,10 @@ fn generate_inner<const P: usize, const CHECK_SPIN: bool>(
                                 spin_set[x1u][r1i][SpinType::NoSpin as usize] &= !spins;
                                 spin_set[x1u][r1i][SpinType::NoSpin as usize] |= m ^ spins;
                                 if spins != 0 {
-                                    if i >= 4 {
-                                        spin_set[x1u][r1i][SpinType::Full as usize] |= spins;
-                                    } else {
-                                        spin_set[x1u][r1i][SpinType::Mini as usize] |=
-                                            spins & !smap[x1u][1 + r1i];
-                                        spin_set[x1u][r1i][SpinType::Full as usize] |=
-                                            spins & smap[x1u][1 + r1i];
-                                    }
+                                    spin_set[x1u][r1i][SpinType::Mini as usize] |=
+                                        spins & !smap[x1u][1 + r1i];
+                                    spin_set[x1u][r1i][SpinType::Full as usize] |=
+                                        spins & smap[x1u][1 + r1i];
                                 }
                             } else {
                                 let blocked_left = if x1u > 0 { cm.get(x1u - 1, rc) } else { !0u64 };
@@ -924,10 +920,10 @@ mod tests {
             Piece::I,
             Piece::O,
             Piece::T,
-            Piece::L,
-            Piece::J,
             Piece::S,
             Piece::Z,
+            Piece::J,
+            Piece::L,
         ] {
             let ml = MoveList::new(&b, p);
             assert!(ml.size() > 0, "No moves for {:?}", p);

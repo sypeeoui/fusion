@@ -250,10 +250,15 @@ pub fn evaluate_position_wasm(
 
                 // Look up actual move score in root_scores
                 let actual_search_score = actual_move_raw.and_then(|raw| {
+                    let hu = frame_context
+                        .as_ref()
+                        .and_then(|ctx| ctx.hold_used)
+                        .unwrap_or_else(|| state.infer_hold_used_for_piece(actual_move_for_search.unwrap().piece()));
+
                     full.root_scores
                         .iter()
-                        .find(|(m, _)| m.raw() == raw)
-                        .map(|(_, s)| *s)
+                        .find(|(m, root_hu, _)| m.raw() == raw && *root_hu == hu)
+                        .map(|(_, _, s)| *s)
                 });
 
                 let (loss, sev) = if let Some(actual_score) = actual_search_score {

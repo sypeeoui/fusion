@@ -86,24 +86,7 @@ impl MoveList {
 
     fn all_valid(&self, b: &Board) -> bool {
         for m in self.moves.iter() {
-            if !is_ok_move(m) {
-                return false;
-            }
-            let pc = m.cells();
-            let off = Coordinates::new(m.x(), m.y());
-            if b.obstructed_coord(&off)
-                || b.obstructed_coord(&(pc[0] + off))
-                || b.obstructed_coord(&(pc[1] + off))
-                || b.obstructed_coord(&(pc[2] + off))
-            {
-                return false;
-            }
-            let below = Coordinates::new(off.x as i32, off.y as i32 - 1);
-            if !b.obstructed_coord(&below)
-                && !b.obstructed_coord(&(pc[0] + below))
-                && !b.obstructed_coord(&(pc[1] + below))
-                && !b.obstructed_coord(&(pc[2] + below))
-            {
+            if !b.legal_lock_placement(m) {
                 return false;
             }
         }

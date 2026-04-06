@@ -11,10 +11,10 @@ pub enum Piece {
     I = 0,
     O = 1,
     T = 2,
-    L = 3,
-    J = 4,
-    S = 5,
-    Z = 6,
+    S = 3,
+    Z = 4,
+    J = 5,
+    L = 6,
 }
 
 impl Piece {
@@ -23,10 +23,10 @@ impl Piece {
             0 => Piece::I,
             1 => Piece::O,
             2 => Piece::T,
-            3 => Piece::L,
-            4 => Piece::J,
-            5 => Piece::S,
-            6 => Piece::Z,
+            3 => Piece::S,
+            4 => Piece::Z,
+            5 => Piece::J,
+            6 => Piece::L,
             _ => panic!("invalid Piece discriminant"),
         }
     }
@@ -41,10 +41,10 @@ pub const ALL_PIECES: [Piece; PIECE_NB] = [
     Piece::I,
     Piece::O,
     Piece::T,
-    Piece::L,
-    Piece::J,
     Piece::S,
     Piece::Z,
+    Piece::J,
+    Piece::L,
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -310,14 +310,14 @@ pub const fn make_piece(p: Piece) -> PieceCoordinates {
         Piece::I => PieceCoordinates::new(C::new(-1, 0), C::new(1, 0), C::new(2, 0)),
         Piece::O => PieceCoordinates::new(C::new(1, 0), C::new(0, 1), C::new(1, 1)),
         Piece::T => PieceCoordinates::new(C::new(-1, 0), C::new(1, 0), C::new(0, 1)),
-        Piece::L => PieceCoordinates::new(C::new(-1, 0), C::new(1, 0), C::new(1, 1)),
-        Piece::J => PieceCoordinates::new(C::new(-1, 0), C::new(1, 0), C::new(-1, 1)),
         Piece::S => PieceCoordinates::new(C::new(-1, 0), C::new(0, 1), C::new(1, 1)),
         Piece::Z => PieceCoordinates::new(C::new(-1, 1), C::new(0, 1), C::new(1, 0)),
+        Piece::L => PieceCoordinates::new(C::new(-1, 0), C::new(1, 0), C::new(1, 1)),
+        Piece::J => PieceCoordinates::new(C::new(-1, 0), C::new(1, 0), C::new(-1, 1)),
     }
 }
 
-const fn rotate_coord(r: Rotation, c: Coordinates) -> Coordinates {
+pub const fn rotate_coord(r: Rotation, c: Coordinates) -> Coordinates {
     match r {
         Rotation::East => Coordinates::new(c.y as i32, -(c.x as i32)),
         Rotation::South => Coordinates::new(-(c.x as i32), -(c.y as i32)),
@@ -377,6 +377,7 @@ mod tests {
     #[test]
     fn test_piece_table_i_north() {
         let pc = piece_table(Piece::I, Rotation::North);
+        // Pivot is implicit at (x,y). Relative cells:
         assert_eq!((pc[0].x, pc[0].y), (-1, 0));
         assert_eq!((pc[1].x, pc[1].y), (1, 0));
         assert_eq!((pc[2].x, pc[2].y), (2, 0));
@@ -385,7 +386,10 @@ mod tests {
     #[test]
     fn test_piece_table_i_east() {
         let pc = piece_table(Piece::I, Rotation::East);
-        // EAST: (y, -x) applied to (-1,0),(1,0),(2,0)
+        // Rotation::East -> (y, -x)
+        // (-1, 0) -> (0, 1)
+        // (1, 0) -> (0, -1)
+        // (2, 0) -> (0, -2)
         assert_eq!((pc[0].x, pc[0].y), (0, 1));
         assert_eq!((pc[1].x, pc[1].y), (0, -1));
         assert_eq!((pc[2].x, pc[2].y), (0, -2));

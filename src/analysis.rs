@@ -424,8 +424,8 @@ fn analyze_move_inner(
                 let actual_search_score = full
                     .root_scores
                     .iter()
-                    .find(|(m, _)| m.raw() == actual_move.raw())
-                    .map(|(_, s)| *s);
+                    .find(|(m, hu, _)| m.raw() == actual_move.raw() && *hu == inferred_hold_used)
+                    .map(|(_, _, s)| *s);
 
                 let k = SIGMOID_K;
                 let c = compute_sigmoid_c(&PlayerSkill::default());
