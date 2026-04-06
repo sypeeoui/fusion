@@ -34,7 +34,7 @@ impl Default for SearchConfig {
             extend_queue_7bag: true,
             attack_config: AttackConfig::tetra_league(),
             attack_weight: 0.50,
-            chain_weight: 1.0,
+            chain_weight: 0.15,
             context_weight: 0.10,
             board_weight: 1.0,
             max_depth_factor: 2.45,
@@ -55,7 +55,7 @@ pub struct SearchResult {
 
 pub struct SearchResultFull {
     pub best: SearchResult,
-    pub root_scores: Vec<(Move, bool, f32)>,
+    pub root_scores: Vec<(Move, f32)>,
     pub position_complexity: f32,
     pub board_score: f32,
     pub attack_score: f32,

@@ -358,7 +358,7 @@ fn run_scenario(scenario: &Scenario, config: &SearchConfig) -> Option<ScenarioRe
     // Simulate insight detection for a suboptimal move (2nd worst or worst)
     let insights_suboptimal = if result.root_scores.len() >= 3 {
         let worst_idx = result.root_scores.len() - 2; // 2nd worst
-        let suboptimal_score = result.root_scores[worst_idx].2;
+        let suboptimal_score = result.root_scores[worst_idx].1;
         detect_insights(&InsightDetectorInput {
             best_attack_score: result.attack_score,
             best_chain_score: result.chain_score,
@@ -378,11 +378,11 @@ fn run_scenario(scenario: &Scenario, config: &SearchConfig) -> Option<ScenarioRe
         .root_scores
         .iter()
         .take(5)
-        .map(|(mv, _, score)| (format_root_move(mv), *score))
+        .map(|(mv, score)| (format_root_move(mv), *score))
         .collect();
 
     let score_spread = if result.root_scores.len() >= 2 {
-        result.root_scores.first().unwrap().2 - result.root_scores.last().unwrap().2
+        result.root_scores.first().unwrap().1 - result.root_scores.last().unwrap().1
     } else {
         0.0
     };

@@ -2,10 +2,8 @@
 // expands moves breadth-first, pruned to beam_width at each depth
 
 use crate::bag;
-use crate::default_ruleset::ACTIVE_RULES;
 
 use crate::eval::EvalWeights;
-use crate::pathfinder;
 
 use crate::state::GameState;
 use crate::transposition::{get_zobrist_keys, TranspositionTable, DEFAULT_TT_SIZE};
@@ -294,20 +292,19 @@ fn run_beam_search_iteration(params: &mut SearchIterationParams<'_>) -> Option<S
         pv_clear_events: best.path_clear_events.to_vec(),
     };
 
-    let mut root_scores: Vec<(crate::header::Move, bool, f32)> = Vec::new();
+    let mut root_scores: Vec<(crate::header::Move, f32)> = Vec::new();
     for node in &beam {
         let raw = node.root_move.raw();
         match root_scores.iter_mut().find(|entry| entry.0.raw() == raw) {
             Some(entry) => {
-                if node.score > entry.2 {
-                    entry.1 = node.root_hold_used;
-                    entry.2 = node.score;
+                if node.score > entry.1 {
+                    entry.1 = node.score;
                 }
             }
-            None => root_scores.push((node.root_move, node.root_hold_used, node.score)),
+            None => root_scores.push((node.root_move, node.score)),
         }
     }
-    root_scores.sort_by(|a, b| b.2.total_cmp(&a.2));
+    root_scores.sort_by(|a, b| b.1.total_cmp(&a.1));
 
     let position_complexity = compute_position_complexity(&root_scores);
 
@@ -327,10 +324,10 @@ fn run_beam_search_iteration(params: &mut SearchIterationParams<'_>) -> Option<S
 
 /// Compute position complexity: variance of top-10 root move scores.
 /// High variance = sharp position (clear best moves), low = flat (all moves similar).
-fn compute_position_complexity(root_scores: &[(crate::header::Move, bool, f32)]) -> f32 {
+fn compute_position_complexity(root_scores: &[(crate::header::Move, f32)]) -> f32 {
     let mut top_n = [0.0f32; 10];
     let count = root_scores.len().min(10);
-    for (i, (_, _, s)) in root_scores.iter().take(10).enumerate() {
+    for (i, (_, s)) in root_scores.iter().take(10).enumerate() {
         top_n[i] = *s;
     }
     if count < 2 {
@@ -472,134 +469,20 @@ fn expand_root(state: &GameState, ctx: &mut SearchExpansionContext<'_>) -> Vec<S
 
     gen_and_eval_root(state, state.current, state.hold, false, ctx, &mut nodes);
 
-    if let Some(held) = state.hold {
-        if held != state.current {
+    match state.hold {
+        Some(held) if held != state.current => {
             gen_and_eval_root(state, held, Some(state.current), true, ctx, &mut nodes);
         }
+        None if !state.queue.is_empty() => {
+            let next = state.queue[0];
+            if next != state.current {
+                gen_and_eval_root(state, next, Some(state.current), true, ctx, &mut nodes);
+            }
+        }
+        _ => {}
     }
-
-    nodes.retain(|node| !is_root_rotation_artifact(&state.board, node.root_move));
 
     nodes
-}
-
-fn is_root_rotation_artifact(board: &crate::board::Board, mv: crate::header::Move) -> bool {
-    let piece = mv.piece();
-    if piece != crate::header::Piece::S
-        && piece != crate::header::Piece::Z
-        && piece != crate::header::Piece::I
-    {
-        return false;
-    }
-
-    let Some(reachable_mv) = pathfinder::normalize_lock_move_for_reachability(board, mv, false)
-    else {
-        return true;
-    };
-
-    if reachable_mv.spin() != crate::header::SpinType::NoSpin {
-        return false;
-    }
-
-    let normal = pathfinder::get_input(board, &reachable_mv, false, false);
-    let forced = pathfinder::get_input(board, &reachable_mv, false, true);
-
-    let normal_suspicious = input_sequence_is_rotation_artifact(&normal, reachable_mv);
-    let forced_suspicious = input_sequence_is_rotation_artifact(&forced, reachable_mv);
-
-    let mut available_paths = 0usize;
-    let mut suspicious_paths = 0usize;
-
-    if normal.size() > 0 {
-        available_paths += 1;
-        if normal_suspicious {
-            suspicious_paths += 1;
-        }
-    }
-
-    if forced.size() > 0 {
-        available_paths += 1;
-        if forced_suspicious {
-            suspicious_paths += 1;
-        }
-    }
-
-    available_paths == 0 || suspicious_paths == available_paths
-}
-
-fn minimal_rotation_steps_from_spawn(target_rotation: crate::header::Rotation) -> usize {
-    use crate::header::Rotation;
-
-    match target_rotation {
-        Rotation::North => 0,
-        Rotation::East | Rotation::West => 1,
-        Rotation::South => {
-            if ACTIVE_RULES.enable_180 {
-                1
-            } else {
-                2
-            }
-        }
-    }
-}
-
-fn input_sequence_is_rotation_artifact(
-    inputs: &pathfinder::Inputs,
-    target_move: crate::header::Move,
-) -> bool {
-    if inputs.size() == 0 {
-        return false;
-    }
-
-    let min_rotations = minimal_rotation_steps_from_spawn(target_move.rotation());
-    let mut rotation_count = 0usize;
-    let mut horizontal_count = 0usize;
-    let mut softdrop_count = 0usize;
-    let mut rotate_flip_count = 0usize;
-    let mut first_softdrop_seen = false;
-    let mut rotations_after_first_softdrop = 0usize;
-
-    for input in &inputs.data {
-        match input {
-            pathfinder::Input::RotateCw | pathfinder::Input::RotateCcw => {
-                rotation_count += 1;
-                if first_softdrop_seen {
-                    rotations_after_first_softdrop += 1;
-                }
-            }
-            pathfinder::Input::RotateFlip => {
-                rotation_count += 1;
-                rotate_flip_count += 1;
-                if first_softdrop_seen {
-                    rotations_after_first_softdrop += 1;
-                }
-            }
-            pathfinder::Input::ShiftLeft
-            | pathfinder::Input::ShiftRight
-            | pathfinder::Input::DasLeft
-            | pathfinder::Input::DasRight => horizontal_count += 1,
-            pathfinder::Input::SoftDrop => {
-                softdrop_count += 1;
-                first_softdrop_seen = true;
-            }
-            _ => {}
-        }
-    }
-
-    if horizontal_count != 0 || rotation_count == 0 {
-        return false;
-    }
-
-    let extra_rotations = rotation_count.saturating_sub(min_rotations);
-
-    // Definite root invariant for S/Z/I artifact paths:
-    // no horizontal movement plus rotation count far above what's needed to
-    // reach the target orientation (especially after softdrop) indicates
-    // a pathfinder rotation-loop artifact.
-    extra_rotations >= 3
-        || (softdrop_count >= 2 && extra_rotations >= 2)
-        || (rotations_after_first_softdrop >= 3)
-        || (rotate_flip_count > 0 && extra_rotations >= 1)
 }
 
 #[cfg(test)]
@@ -607,7 +490,7 @@ mod tests {
     use super::*;
     use crate::bag;
     use crate::board::{Board, FULL_ROW};
-    use crate::header::{Move, Piece, Rotation, COL_NB};
+    use crate::header::{Move, Piece, COL_NB};
     use crate::state::CoachingState;
     use smallvec::{smallvec, SmallVec};
     fn make_node(
@@ -641,266 +524,6 @@ mod tests {
             path_context: 0.0,
             path_clear_events: SmallVec::new(),
         }
-    }
-
-    #[test]
-    fn test_reported_s_case_is_flagged_as_rotation_artifact() {
-        let mut board = Board::new();
-        board.rows[0] = 1015;
-        board.rows[1] = 1011;
-        board.rows[2] = 1019;
-        for x in 0..COL_NB {
-            board.cols[x] = board.col(x);
-        }
-
-        let mv = Move::new(Piece::S, Rotation::East, 2, 1, false);
-        assert!(
-            is_root_rotation_artifact(&board, mv),
-            "reported no-shift S rotation-loop route should be filtered"
-        );
-
-        let mini = Move::new_allspin_mini(Piece::S, Rotation::East, 2, 1);
-        assert!(
-            is_root_rotation_artifact(&board, mini),
-            "spin-labeled S root that normalizes to the same artifact should be filtered"
-        );
-    }
-
-    #[test]
-    fn test_expand_root_filters_reported_s_case_move() {
-        let mut board = Board::new();
-        board.rows[0] = 1015;
-        board.rows[1] = 1011;
-        board.rows[2] = 1019;
-        for x in 0..COL_NB {
-            board.cols[x] = board.col(x);
-        }
-
-        let state = GameState::new(
-            board,
-            Piece::S,
-            vec![
-                Piece::T,
-                Piece::I,
-                Piece::L,
-                Piece::J,
-                Piece::O,
-                Piece::Z,
-                Piece::S,
-            ],
-        );
-        let config = SearchConfig {
-            beam_width: 800,
-            depth: 14,
-            futility_delta: 15.0,
-            time_budget_ms: Some(50),
-            use_tt: false,
-            extend_queue_7bag: true,
-            attack_weight: 0.5,
-            chain_weight: 1.0,
-            context_weight: 0.1,
-            board_weight: 1.0,
-            quiescence_max_extensions: 3,
-            quiescence_beam_fraction: 0.15,
-            ..SearchConfig::default()
-        };
-        let weights = EvalWeights::default();
-
-        let mut tt = Some(TranspositionTable::new(DEFAULT_TT_SIZE));
-        let mut ctx = SearchExpansionContext {
-            config: &config,
-            weights: &weights,
-            remaining_depth: 13,
-            zobrist_keys: get_zobrist_keys(),
-            tt: &mut tt,
-        };
-
-        let target = Move::new(Piece::S, Rotation::East, 2, 1, false);
-        let roots = expand_root(&state, &mut ctx);
-        assert!(
-            !roots.iter().any(|n| n.root_move.raw() == target.raw()),
-            "reported artifact root move should be removed at root expansion"
-        );
-    }
-
-    #[test]
-    fn test_reported_z_case_is_flagged_as_rotation_artifact() {
-        let mut board = Board::new();
-        board.rows[0] = 1007;
-        board.rows[1] = 975;
-        board.rows[2] = 991;
-        board.rows[3] = 990;
-        board.rows[4] = 959;
-        board.rows[5] = 574;
-        board.rows[6] = 794;
-        board.rows[7] = 520;
-        board.rows[8] = 8;
-        for x in 0..COL_NB {
-            board.cols[x] = board.col(x);
-        }
-
-        let mv = Move::new(Piece::Z, Rotation::East, 4, 1, false);
-        assert!(
-            is_root_rotation_artifact(&board, mv),
-            "reported no-shift Z rotation-loop route should be filtered"
-        );
-    }
-
-    #[test]
-    fn test_expand_root_filters_reported_z_case_move() {
-        let mut board = Board::new();
-        board.rows[0] = 1007;
-        board.rows[1] = 975;
-        board.rows[2] = 991;
-        board.rows[3] = 990;
-        board.rows[4] = 959;
-        board.rows[5] = 574;
-        board.rows[6] = 794;
-        board.rows[7] = 520;
-        board.rows[8] = 8;
-        for x in 0..COL_NB {
-            board.cols[x] = board.col(x);
-        }
-
-        let mut state = GameState::new(
-            board,
-            Piece::Z,
-            vec![
-                Piece::J,
-                Piece::T,
-                Piece::O,
-                Piece::Z,
-                Piece::L,
-                Piece::T,
-                Piece::I,
-                Piece::J,
-                Piece::O,
-                Piece::S,
-                Piece::Z,
-            ],
-        );
-        state.hold = Some(Piece::L);
-        state.b2b = 12;
-
-        let config = SearchConfig {
-            beam_width: 800,
-            depth: 14,
-            futility_delta: 15.0,
-            time_budget_ms: Some(50),
-            use_tt: false,
-            extend_queue_7bag: true,
-            attack_weight: 0.5,
-            chain_weight: 10.0,
-            context_weight: 0.1,
-            board_weight: 1.0,
-            quiescence_max_extensions: 3,
-            quiescence_beam_fraction: 0.15,
-            ..SearchConfig::default()
-        };
-        let weights = EvalWeights::default();
-
-        let mut tt = Some(TranspositionTable::new(DEFAULT_TT_SIZE));
-        let mut ctx = SearchExpansionContext {
-            config: &config,
-            weights: &weights,
-            remaining_depth: 13,
-            zobrist_keys: get_zobrist_keys(),
-            tt: &mut tt,
-        };
-
-        let target = Move::new(Piece::Z, Rotation::East, 4, 1, false);
-        let roots = expand_root(&state, &mut ctx);
-        assert!(
-            !roots.iter().any(|n| n.root_move.raw() == target.raw()),
-            "reported Z artifact root move should be removed at root expansion"
-        );
-    }
-
-    #[test]
-    fn test_reported_z_softdrop_rotation_loop_is_flagged() {
-        let mut board = Board::new();
-        board.rows[0] = 1007;
-        board.rows[1] = 975;
-        board.rows[2] = 991;
-        board.rows[3] = 927;
-        board.rows[4] = 831;
-        board.rows[5] = 911;
-        board.rows[6] = 415;
-        board.rows[7] = 924;
-        for x in 0..COL_NB {
-            board.cols[x] = board.col(x);
-        }
-
-        let mv = Move::new(Piece::Z, Rotation::East, 4, 1, false);
-        assert!(
-            is_root_rotation_artifact(&board, mv),
-            "reported Z softdrop+rotation loop should be filtered"
-        );
-    }
-
-    #[test]
-    fn test_expand_root_filters_reported_z_softdrop_rotation_loop() {
-        let mut board = Board::new();
-        board.rows[0] = 1007;
-        board.rows[1] = 975;
-        board.rows[2] = 991;
-        board.rows[3] = 927;
-        board.rows[4] = 831;
-        board.rows[5] = 911;
-        board.rows[6] = 415;
-        board.rows[7] = 924;
-        for x in 0..COL_NB {
-            board.cols[x] = board.col(x);
-        }
-
-        let mut state = GameState::new(
-            board,
-            Piece::Z,
-            vec![
-                Piece::I,
-                Piece::L,
-                Piece::Z,
-                Piece::O,
-                Piece::J,
-                Piece::T,
-                Piece::S,
-            ],
-        );
-        state.hold = Some(Piece::S);
-        state.b2b = 2;
-
-        let config = SearchConfig {
-            beam_width: 800,
-            depth: 14,
-            futility_delta: 15.0,
-            time_budget_ms: Some(50),
-            use_tt: false,
-            extend_queue_7bag: true,
-            attack_weight: 0.5,
-            chain_weight: 1.0,
-            context_weight: 0.1,
-            board_weight: 1.0,
-            quiescence_max_extensions: 3,
-            quiescence_beam_fraction: 0.15,
-            ..SearchConfig::default()
-        };
-        let weights = EvalWeights::default();
-
-        let mut tt = Some(TranspositionTable::new(DEFAULT_TT_SIZE));
-        let mut ctx = SearchExpansionContext {
-            config: &config,
-            weights: &weights,
-            remaining_depth: 13,
-            zobrist_keys: get_zobrist_keys(),
-            tt: &mut tt,
-        };
-
-        let target = Move::new(Piece::Z, Rotation::East, 4, 1, false);
-        let roots = expand_root(&state, &mut ctx);
-        assert!(
-            !roots.iter().any(|n| n.root_move.raw() == target.raw()),
-            "reported Z softdrop+rotation artifact should be removed at root expansion"
-        );
     }
 
     #[test]
@@ -981,7 +604,7 @@ mod tests {
     }
 
     #[test]
-    fn test_hold_none_does_not_create_hold_move() {
+    fn test_hold_none_uses_queue() {
         let state = GameState::new(Board::new(), Piece::T, vec![Piece::I, Piece::O]);
         let config = SearchConfig {
             beam_width: 200,
@@ -993,10 +616,6 @@ mod tests {
         let result = find_best_move(&state, &config, &weights);
         assert!(result.is_some());
         let r = result.unwrap_or_else(|| panic!("checked"));
-        assert!(
-            !r.hold_used,
-            "hold cannot be used when hold slot is empty"
-        );
         assert!(r.pv.len() <= 2, "PV shouldn't exceed depth");
     }
 

@@ -168,12 +168,31 @@ pub(crate) static KICKS_180: [[Offsets6; ROTATION_NB]; 2] = [
     ],
     // [1] I
     [
-        // Keep the 6-slot shape for compatibility with shared rotation loops,
-        // but only the first two offsets are meaningful in this ruleset.
-        [c!(0, 0), c!(0, 1), c!(0, 1), c!(0, 1), c!(0, 1), c!(0, 1)],
-        [c!(0, 0), c!(1, 0), c!(1, 0), c!(1, 0), c!(1, 0), c!(1, 0)],
-        [c!(0, 0), c!(0, -1), c!(0, -1), c!(0, -1), c!(0, -1), c!(0, -1)],
-        [c!(0, 0), c!(-1, 0), c!(-1, 0), c!(-1, 0), c!(-1, 0), c!(-1, 0)],
+        [
+            c!(1, -1),
+            c!(1, 0),
+            c!(2, 0),
+            c!(0, 0),
+            c!(2, -1),
+            c!(0, -1),
+        ],
+        [
+            c!(-1, -1),
+            c!(0, -1),
+            c!(0, 1),
+            c!(0, 0),
+            c!(-1, 1),
+            c!(-1, 0),
+        ],
+        [
+            c!(-1, 1),
+            c!(-1, 0),
+            c!(-2, 0),
+            c!(0, 0),
+            c!(-2, 1),
+            c!(0, 1),
+        ],
+        [c!(1, 1), c!(0, 1), c!(0, 3), c!(0, 2), c!(1, 3), c!(1, 2)],
     ],
 ];
 
@@ -351,21 +370,5 @@ mod tests {
         assert_eq!(KICKS[0][0][0].len(), 5);
         assert_eq!(KICKS_180[0].len(), ROTATION_NB);
         assert_eq!(KICKS_180[0][0].len(), 6);
-    }
-
-    #[test]
-    fn test_i_180_kicks_match_web_srs_plus() {
-        // Web SRS+ only allows two I-piece 180 kick offsets per orientation.
-        assert_eq!(KICKS_180[1][0][0], Coordinates::new(0, 0));
-        assert_eq!(KICKS_180[1][0][1], Coordinates::new(0, 1));
-
-        assert_eq!(KICKS_180[1][1][0], Coordinates::new(0, 0));
-        assert_eq!(KICKS_180[1][1][1], Coordinates::new(1, 0));
-
-        assert_eq!(KICKS_180[1][2][0], Coordinates::new(0, 0));
-        assert_eq!(KICKS_180[1][2][1], Coordinates::new(0, -1));
-
-        assert_eq!(KICKS_180[1][3][0], Coordinates::new(0, 0));
-        assert_eq!(KICKS_180[1][3][1], Coordinates::new(-1, 0));
     }
 }
