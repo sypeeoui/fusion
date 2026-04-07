@@ -9,30 +9,37 @@ crate-type = ["cdylib", "rlib"]
 [[bin]]
 name = "perft_cli"
 path = "src/bin/perft_cli.rs"
+required-features = ["native"]
 
 [[bin]]
 name = "profile_perft"
 path = "src/bin/profile_perft.rs"
+required-features = ["native"]
 
 [[bin]]
 name = "bench_perft"
 path = "src/bin/bench_perft.rs"
+required-features = ["native"]
 
 [[bin]]
 name = "calibrate_skill_buckets"
 path = "src/bin/calibrate_skill_buckets.rs"
+required-features = ["native"]
 
 [[bin]]
 name = "replay_validation_gate"
 path = "src/bin/replay_validation_gate.rs"
+required-features = ["native"]
 
 [[bin]]
 name = "engine_api"
 path = "src/bin/engine_api.rs"
+required-features = ["native"]
 
 [features]
-default = ["rayon"]
+default = ["native", "rayon"]
 rayon = ["dep:rayon"]
+native = ["dep:axum", "dep:tokio", "dep:tower-http"]
 wasm = ["dep:wasm-bindgen", "dep:serde_json", "dep:js-sys", "dep:console_error_panic_hook"]
 
 [dependencies]
@@ -43,9 +50,11 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", optional = true }
 js-sys = { version = "0.3", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
-axum = "0.7"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"] }
-tower-http = { version = "0.6", features = ["cors"] }
+
+# Native-only dependencies
+axum = { version = "0.7", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"], optional = true }
+tower-http = { version = "0.6", features = ["cors"], optional = true }
 
 [package.metadata.wasm-pack.profile.release]
 wasm-opt = false
