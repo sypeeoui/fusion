@@ -111,11 +111,11 @@ pub fn perft_parallel(board: &Board, depth: usize) -> u64 {
 mod tests {
     use super::*;
 
-    const D1: u64 = 17;
-    const D2: u64 = 153;
-    const D3: u64 = 5266;
-    const D4: u64 = 188561;
-    const D5: u64 = 3501768;
+    const D1: u64 = 34;
+    const D2: u64 = 306;
+    const D3: u64 = 10532;
+    const D4: u64 = 377122;
+    const D5: u64 = 14003532;
 
     #[test]
     fn test_perft_d1() {

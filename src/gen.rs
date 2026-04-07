@@ -27,43 +27,23 @@ pub(crate) fn in_bounds(p: Piece, r: Rotation, x: i32) -> bool {
     true
 }
 
-pub(crate) const fn group2(p: Piece) -> bool {
-    matches!(p, Piece::I | Piece::S | Piece::Z)
+pub(crate) const fn group2(_p: Piece) -> bool {
+    false
 }
 
 pub(crate) const fn canonical_size(p: Piece) -> usize {
     match p {
         Piece::O => 1,
-        Piece::I | Piece::S | Piece::Z => 2,
-        _ => 4, // L, J, T
+        _ => 4,
     }
 }
 
-pub(crate) fn canonical_r(p: Piece, r: Rotation) -> Rotation {
-    match p {
-        Piece::O => Rotation::North,
-        Piece::I | Piece::S | Piece::Z => {
-            // r & 1: North/South -> North(0), East/West -> East(1)
-            Rotation::from_u8((r as u8) & 1)
-        }
-        _ => r, // L, J, T
-    }
+pub(crate) fn canonical_r(_p: Piece, r: Rotation) -> Rotation {
+    r
 }
 
-pub(crate) fn canonical_offset(p: Piece, r: Rotation) -> Coordinates {
-    match p {
-        Piece::I => match r {
-            Rotation::South => Coordinates::new(0, 1),
-            Rotation::West => Coordinates::new(-1, 0),
-            _ => Coordinates::new(0, 0),
-        },
-        Piece::S | Piece::Z => match r {
-            Rotation::South => Coordinates::new(0, 1),
-            Rotation::West => Coordinates::new(1, 0),
-            _ => Coordinates::new(0, 0),
-        },
-        _ => Coordinates::new(0, 0),
-    }
+pub(crate) fn canonical_offset(_p: Piece, _r: Rotation) -> Coordinates {
+    Coordinates::new(0, 0)
 }
 
 // -- Direction --
@@ -272,11 +252,11 @@ mod tests {
 
     #[test]
     fn test_canonical_r() {
-        assert_eq!(canonical_r(Piece::O, Rotation::East), Rotation::North);
+        assert_eq!(canonical_r(Piece::O, Rotation::East), Rotation::East);
         assert_eq!(canonical_r(Piece::I, Rotation::North), Rotation::North);
         assert_eq!(canonical_r(Piece::I, Rotation::East), Rotation::East);
-        assert_eq!(canonical_r(Piece::I, Rotation::South), Rotation::North);
-        assert_eq!(canonical_r(Piece::I, Rotation::West), Rotation::East);
+        assert_eq!(canonical_r(Piece::I, Rotation::South), Rotation::South);
+        assert_eq!(canonical_r(Piece::I, Rotation::West), Rotation::West);
         assert_eq!(canonical_r(Piece::T, Rotation::South), Rotation::South);
     }
 
@@ -284,11 +264,11 @@ mod tests {
     fn test_canonical_offset() {
         assert_eq!(
             canonical_offset(Piece::I, Rotation::South),
-            Coordinates::new(0, 1)
+            Coordinates::new(0, 0)
         );
         assert_eq!(
             canonical_offset(Piece::I, Rotation::West),
-            Coordinates::new(-1, 0)
+            Coordinates::new(0, 0)
         );
         assert_eq!(
             canonical_offset(Piece::I, Rotation::North),
@@ -296,11 +276,11 @@ mod tests {
         );
         assert_eq!(
             canonical_offset(Piece::S, Rotation::South),
-            Coordinates::new(0, 1)
+            Coordinates::new(0, 0)
         );
         assert_eq!(
             canonical_offset(Piece::S, Rotation::West),
-            Coordinates::new(1, 0)
+            Coordinates::new(0, 0)
         );
         assert_eq!(
             canonical_offset(Piece::T, Rotation::South),
@@ -353,9 +333,7 @@ mod tests {
         let cols = b.compute_cols();
         
         // S piece at East rotation (1):
-        // Blocks: (0,0), (0,1), (1,1), (2,1) in 3x3 grid
-        // Pivot (1,1) -> Relative: (-1,-1), (-1,0), (0,0), (1,0)
-        // WAIT, zztetris S: [-1, 0], [0, 0], [0, 1], [1, 1]
+        // Blocks: [-1, 0], [0, 0], [0, 1], [1, 1] in zztetris
         // Rotation 1 (East) of these:
         // [0, 1], [0, 0], [1, 0], [1, -1]
         // At absolute y=0, the block [1, -1] is at y=-1 (COLLISION)

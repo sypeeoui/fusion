@@ -30,7 +30,6 @@ const fn piece_from_index(p: usize) -> Piece {
 fn generate_inner<const P: usize, const CHECK_SPIN: bool>(
     cm: &CollisionMap,
     moves: &mut MoveBuffer,
-    slow: bool,
     force: bool,
     spin_map: Option<&[[Bitboard; 5]; COL_NB]>,
 ) {
@@ -60,7 +59,7 @@ fn generate_inner<const P: usize, const CHECK_SPIN: bool>(
         }
     }
 
-    if slow {
+    {
         let spawn: Bitboard = if force {
             let s = !cm.get(SPAWN_COL, Rotation::North) & (!0u64 << ACTIVE_RULES.spawn_row);
             s & s.wrapping_neg()
@@ -76,48 +75,6 @@ fn generate_inner<const P: usize, const CHECK_SPIN: bool>(
 
         if CHECK_SPIN {
             spin_set[SPAWN_COL][Rotation::North as usize][SpinType::NoSpin as usize] = spawn;
-        }
-    } else {
-        for x in 0..COL_NB {
-            for ri in 0..canonical_sz {
-                let r: Rotation = Rotation::from_u8(ri as u8);
-                if !in_bounds(p, r, x as i32) {
-                    continue;
-                }
-
-                debug_assert!(cm.get(x, r) != !0u64);
-                let y = bitlen(cm.get(x, r));
-                let surface = bb_low(ACTIVE_RULES.spawn_row) & !bb_low(y as i32);
-
-                searched[x][ri] |= surface;
-                to_search[x][ri] = surface;
-                remaining |= remaining_index(x as i32, r);
-
-                if is_group2 {
-                    let r1 = rotate(Direction::Flip, r);
-                    let r1i = r1 as usize;
-                    if r1 == Rotation::South {
-                        let s = surface & (surface >> 1);
-                        searched[x][r1i] |= s;
-                        to_search[x][r1i] = s;
-                    } else {
-                        searched[x][r1i] |= surface;
-                        to_search[x][r1i] = surface;
-                    }
-                    remaining |= remaining_index(x as i32, r1);
-                }
-
-                if CHECK_SPIN {
-                    spin_set[x][ri][SpinType::NoSpin as usize] = surface;
-                } else {
-                    moves.push(Move::new(p, r, x as i32, y as i32, false));
-                    total += popcount(!cm.get(x, r) & ((cm.get(x, r) << 1) | 1)) as i32 - 1;
-                }
-            }
-        }
-
-        if !CHECK_SPIN && total == 0 {
-            return;
         }
     }
 
@@ -738,19 +695,10 @@ pub fn generate(b: &Board, moves: &mut MoveBuffer, p: Piece, force: bool) {
     // precompute columns once — avoids repeated 40-row iteration in col()
     let cols = b.compute_cols();
 
-    let h = {
-        let mut m = cols[0];
-        for col in cols.iter().skip(1) {
-            m |= col;
-        }
-        bitlen(m)
-    };
-
-    let slow = h as i32 > ACTIVE_RULES.spawn_row - 3;
-    let low = !slow && h <= 13;
+    let low = false;
 
     let allspin_eligible = p != Piece::T && p != Piece::O && ACTIVE_RULES.enable_allspin;
-    if low && (p != Piece::T || !ACTIVE_RULES.enable_tspin) && !allspin_eligible {
+    if low {
         match p {
             Piece::I => generate16::<{ Piece::I as usize }>(&cols, moves),
             Piece::O => generate16::<{ Piece::O as usize }>(&cols, moves),
@@ -805,7 +753,6 @@ pub fn generate(b: &Board, moves: &mut MoveBuffer, p: Piece, force: bool) {
                 generate_inner::<{ Piece::T as usize }, true>(
                     &cm,
                     moves,
-                    slow,
                     force,
                     Some(&spin_map),
                 );
@@ -820,7 +767,7 @@ pub fn generate(b: &Board, moves: &mut MoveBuffer, p: Piece, force: bool) {
                     Piece::Z => generate16::<{ Piece::Z as usize }>(&cols, moves),
                 }
             } else {
-                generate_inner::<{ Piece::T as usize }, false>(&cm, moves, slow, force, None);
+                generate_inner::<{ Piece::T as usize }, false>(&cm, moves, force, None);
             }
         }
         _ => {
@@ -828,46 +775,46 @@ pub fn generate(b: &Board, moves: &mut MoveBuffer, p: Piece, force: bool) {
             if allspin_eligible {
                 match p {
                     Piece::I => {
-                        generate_inner::<{ Piece::I as usize }, true>(&cm, moves, slow, force, None)
+                        generate_inner::<{ Piece::I as usize }, true>(&cm, moves, force, None)
                     }
                     Piece::L => {
-                        generate_inner::<{ Piece::L as usize }, true>(&cm, moves, slow, force, None)
+                        generate_inner::<{ Piece::L as usize }, true>(&cm, moves, force, None)
                     }
                     Piece::J => {
-                        generate_inner::<{ Piece::J as usize }, true>(&cm, moves, slow, force, None)
+                        generate_inner::<{ Piece::J as usize }, true>(&cm, moves, force, None)
                     }
                     Piece::S => {
-                        generate_inner::<{ Piece::S as usize }, true>(&cm, moves, slow, force, None)
+                        generate_inner::<{ Piece::S as usize }, true>(&cm, moves, force, None)
                     }
                     Piece::Z => {
-                        generate_inner::<{ Piece::Z as usize }, true>(&cm, moves, slow, force, None)
+                        generate_inner::<{ Piece::Z as usize }, true>(&cm, moves, force, None)
                     }
                     _ => {
-                        generate_inner::<{ Piece::T as usize }, false>(&cm, moves, slow, force, None)
+                        generate_inner::<{ Piece::T as usize }, false>(&cm, moves, force, None)
                     }
                 }
             } else {
                 match p {
                     Piece::I => {
-                        generate_inner::<{ Piece::I as usize }, false>(&cm, moves, slow, force, None)
+                        generate_inner::<{ Piece::I as usize }, false>(&cm, moves, force, None)
                     }
                     Piece::O => {
-                        generate_inner::<{ Piece::O as usize }, false>(&cm, moves, slow, force, None)
+                        generate_inner::<{ Piece::O as usize }, false>(&cm, moves, force, None)
                     }
                     Piece::L => {
-                        generate_inner::<{ Piece::L as usize }, false>(&cm, moves, slow, force, None)
+                        generate_inner::<{ Piece::L as usize }, false>(&cm, moves, force, None)
                     }
                     Piece::J => {
-                        generate_inner::<{ Piece::J as usize }, false>(&cm, moves, slow, force, None)
+                        generate_inner::<{ Piece::J as usize }, false>(&cm, moves, force, None)
                     }
                     Piece::S => {
-                        generate_inner::<{ Piece::S as usize }, false>(&cm, moves, slow, force, None)
+                        generate_inner::<{ Piece::S as usize }, false>(&cm, moves, force, None)
                     }
                     Piece::Z => {
-                        generate_inner::<{ Piece::Z as usize }, false>(&cm, moves, slow, force, None)
+                        generate_inner::<{ Piece::Z as usize }, false>(&cm, moves, force, None)
                     }
                     Piece::T => {
-                        generate_inner::<{ Piece::T as usize }, false>(&cm, moves, slow, force, None)
+                        generate_inner::<{ Piece::T as usize }, false>(&cm, moves, force, None)
                     }
                 }
             }
@@ -884,7 +831,7 @@ mod tests {
         let b = Board::new();
         let mut moves = MoveBuffer::new();
         generate(&b, &mut moves, Piece::I, false);
-        assert_eq!(moves.len(), 17); // D1 baseline for I piece
+        assert_eq!(moves.len(), 34); // D1 baseline for I piece (non-canonical)
     }
 
     #[test]
@@ -892,12 +839,12 @@ mod tests {
         // D1 baselines from cobra-movegen (queue IOLJSZT, each piece solo)
         let b = Board::new();
         let expected = [
-            (Piece::I, 17),
+            (Piece::I, 34),
             (Piece::O, 9),
             (Piece::L, 34),
             (Piece::J, 34),
-            (Piece::S, 17),
-            (Piece::Z, 17),
+            (Piece::S, 34),
+            (Piece::Z, 34),
             (Piece::T, 34),
         ];
         for (p, count) in expected {

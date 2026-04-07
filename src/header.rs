@@ -311,7 +311,7 @@ pub const fn make_piece(p: Piece) -> PieceCoordinates {
         Piece::O => PieceCoordinates::new(C::new(1, 0), C::new(0, 1), C::new(1, 1)),
         Piece::T => PieceCoordinates::new(C::new(-1, 0), C::new(1, 0), C::new(0, 1)),
         Piece::S => PieceCoordinates::new(C::new(-1, 0), C::new(0, 1), C::new(1, 1)),
-        Piece::Z => PieceCoordinates::new(C::new(-1, 1), C::new(0, 1), C::new(1, 0)),
+        Piece::Z => PieceCoordinates::new(C::new(1, 0), C::new(-1, 1), C::new(0, 1)),
         Piece::L => PieceCoordinates::new(C::new(-1, 0), C::new(1, 0), C::new(1, 1)),
         Piece::J => PieceCoordinates::new(C::new(-1, 0), C::new(1, 0), C::new(-1, 1)),
     }
