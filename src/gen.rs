@@ -162,17 +162,17 @@ pub(crate) static KICKS: [[[Offsets5; ROTATION_NB]; DIRECTION_NB]; 3] = [
 pub(crate) static KICKS_180: [[Offsets6; ROTATION_NB]; 2] = [
     // [0] LJSZT
     [
-        [c!(0, 0), c!(0, 1), c!(1, 1), c!(-1, 1), c!(1, 0), c!(-1, 0)],
-        [c!(0, 0), c!(1, 0), c!(1, 2), c!(1, 1), c!(0, 2), c!(0, 1)],
-        [c!(0, 0), c!(0, -1), c!(-1, -1), c!(1, -1), c!(-1, 0), c!(1, 0)],
-        [c!(0, 0), c!(-1, 0), c!(-1, 2), c!(-1, 1), c!(0, 2), c!(0, 1)],
+        [c!(0, 0), c!(0, 1), c!(1, 1), c!(-1, 1), c!(1, 0), c!(-1, 0)], // 0->2
+        [c!(0, 0), c!(1, 0), c!(1, 2), c!(1, 1), c!(0, 2), c!(0, 1)],  // 1->3
+        [c!(0, 0), c!(0, -1), c!(-1, -1), c!(1, -1), c!(-1, 0), c!(1, 0)], // 2->0
+        [c!(0, 0), c!(-1, 0), c!(-1, 2), c!(-1, 1), c!(0, 2), c!(0, 1)], // 3->1
     ],
     // [1] I
     [
-        [c!(0, 0), c!(0, 1), c!(0, 0), c!(0, 0), c!(0, 0), c!(0, 0)],
-        [c!(0, 0), c!(1, 0), c!(0, 0), c!(0, 0), c!(0, 0), c!(0, 0)],
-        [c!(0, 0), c!(0, -1), c!(0, 0), c!(0, 0), c!(0, 0), c!(0, 0)],
-        [c!(0, 0), c!(-1, 0), c!(0, 0), c!(0, 0), c!(0, 0), c!(0, 0)],
+        [c!(0, 0), c!(0, 1), c!(0, 0), c!(0, 0), c!(0, 0), c!(0, 0)], // 0->2
+        [c!(0, 0), c!(1, 0), c!(0, 0), c!(0, 0), c!(0, 0), c!(0, 0)], // 1->3
+        [c!(0, 0), c!(0, -1), c!(0, 0), c!(0, 0), c!(0, 0), c!(0, 0)], // 2->0
+        [c!(0, 0), c!(-1, 0), c!(0, 0), c!(0, 0), c!(0, 0), c!(0, 0)], // 3->1
     ],
 ];
 
@@ -202,13 +202,13 @@ impl CollisionMap {
         for x in 0..COL_NB {
             for ri in 0..ROTATION_NB {
                 let r = Rotation::from_u8(ri as u8);
-                let mut mask = 0u64;
+                let mut m = 0u64;
                 if in_bounds(p, r, x as i32) {
                     let pc = piece_table(p, r);
-                    mask |= cols[x];
-                    mask |= cols[x].wrapping_add(1).wrapping_sub(1); // placeholder for actual logic if needed
-                    // Proper bitmask: bit y is set if any mino of piece at (x, y, r) is blocked
-                    let mut m = cols[x];
+                    // Check pivot (at 0,0 relative)
+                    m |= cols[x];
+                    
+                    // Check other 3 blocks
                     for i in 0..3 {
                         let dx = pc[i].x as i32;
                         let dy = pc[i].y as i32;
@@ -218,9 +218,7 @@ impl CollisionMap {
                             if dy > 0 {
                                 m |= col_mask >> dy;
                             } else if dy < 0 {
-                                // If mino is at relative dy < 0, then for any y such that y + dy < 0,
-                                // the piece is obstructed by the floor.
-                                // This means bits 0..(-dy) of 'm' should be set.
+                                // Floor collision: bit y is set if y+dy < 0 => y < -dy
                                 m |= col_mask << (-dy);
                                 m |= bb_low(-dy);
                             } else {
@@ -228,11 +226,10 @@ impl CollisionMap {
                             }
                         }
                     }
-                    mask = m;
                 } else {
-                    mask = !0u64;
+                    m = !0u64;
                 }
-                data[x][ri] = mask;
+                data[x][ri] = m;
             }
         }
         Self { data }
@@ -339,5 +336,32 @@ mod tests {
         assert_eq!(KICKS[0][0][0].len(), 5);
         assert_eq!(KICKS_180[0].len(), ROTATION_NB);
         assert_eq!(KICKS_180[0][0].len(), 6);
+    }
+
+    #[test]
+    fn test_kick_values() {
+        // SRS+ I 0->1 should have (1, 0) as second offset
+        assert_eq!(KICKS[2][0][0][1], c!(1, 0));
+        
+        // 180 I 0->2 should have (0, 1) as second offset
+        assert_eq!(KICKS_180[1][0][1], c!(0, 1));
+    }
+
+    #[test]
+    fn test_collision_floor_sz() {
+        let b = Board::new();
+        let cols = b.compute_cols();
+        
+        // S piece at East rotation (1):
+        // Blocks: (0,0), (0,1), (1,1), (2,1) in 3x3 grid
+        // Pivot (1,1) -> Relative: (-1,-1), (-1,0), (0,0), (1,0)
+        // WAIT, zztetris S: [-1, 0], [0, 0], [0, 1], [1, 1]
+        // Rotation 1 (East) of these:
+        // [0, 1], [0, 0], [1, 0], [1, -1]
+        // At absolute y=0, the block [1, -1] is at y=-1 (COLLISION)
+        let cm = CollisionMap::new(&cols, Piece::S);
+        let mask = cm.get(4, Rotation::East);
+        assert_eq!(mask & 1, 1, "S piece at y=0 vertical should collide with floor");
+        assert_eq!(mask & 2, 0, "S piece at y=1 vertical should NOT collide with floor");
     }
 }
