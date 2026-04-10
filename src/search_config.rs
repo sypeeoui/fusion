@@ -16,6 +16,7 @@ pub struct SearchConfig {
     pub attack_config: AttackConfig,
     pub attack_weight: f32,
     pub chain_weight: f32,
+    pub b2b_weight: f32,
     pub context_weight: f32,
     pub board_weight: f32,
     pub max_depth_factor: f32,
@@ -35,7 +36,8 @@ impl Default for SearchConfig {
             attack_config: AttackConfig::tetra_league(),
             attack_weight: 0.50,
             chain_weight: 0.15,
-            context_weight: 0.10,
+            b2b_weight: 0.20,
+            context_weight: 0.25,
             board_weight: 1.0,
             max_depth_factor: 2.45,
             quiescence_max_extensions: 3,
@@ -60,9 +62,11 @@ pub struct SearchResultFull {
     pub board_score: f32,
     pub attack_score: f32,
     pub chain_score: f32,
+    pub b2b_score: f32,
     pub context_score: f32,
     pub path_attack: f32,
     pub path_chain: f32,
+    pub path_b2b: f32,
     pub path_context: f32,
 }
 
@@ -101,6 +105,7 @@ pub struct SearchNode {
     pub board_score: f32,
     pub attack_score: f32,
     pub chain_score: f32,
+    pub b2b_score: f32,
     pub context_score: f32,
     pub path_attack: f32,
     pub path_chain: f32,
@@ -111,6 +116,6 @@ pub struct SearchNode {
 impl SearchNode {
     #[inline]
     pub fn is_loud(&self) -> bool {
-        self.combo > 0 || self.b2b > 0 || !self.path_clear_events.is_empty()
+        self.combo > 0 || !self.path_clear_events.is_empty() || self.board.height() < 4
     }
 }

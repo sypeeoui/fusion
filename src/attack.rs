@@ -11,8 +11,6 @@ pub const QUAD: u8 = 4;
 pub const PENTA: u8 = 5;
 
 // allspin attack (any piece with spin, not just T)
-pub const SPIN_MINI: u8 = 0;
-pub const SPIN: u8 = 0;
 pub const SPIN_MINI_SINGLE: u8 = 0;
 pub const SPIN_SINGLE: u8 = 2;
 pub const SPIN_MINI_DOUBLE: u8 = 1;
@@ -45,6 +43,10 @@ pub struct AttackConfig {
     pub b2b_chaining: bool,
     pub combo_table: ComboTable,
     pub garbage_multiplier: f32,
+    pub base_attack: [u8; 6],
+    pub mini_spin_attack: [u8; 6],
+    pub spin_attack: [u8; 6],
+    pub b2b_bonus: u8,
 }
 
 impl AttackConfig {
@@ -55,6 +57,10 @@ impl AttackConfig {
             b2b_chaining: true,
             combo_table: ComboTable::Multiplier,
             garbage_multiplier: 1.0,
+            base_attack: [0, SINGLE, DOUBLE, TRIPLE, QUAD, PENTA],
+            mini_spin_attack: [0, SPIN_MINI_SINGLE, SPIN_MINI_DOUBLE, SPIN_MINI_TRIPLE, SPIN_QUAD, SPIN_QUAD + 2],
+            spin_attack: [0, SPIN_SINGLE, SPIN_DOUBLE, SPIN_TRIPLE, SPIN_QUAD, SPIN_PENTA],
+            b2b_bonus: BACK_TO_BACK_BONUS,
         }
     }
 
@@ -65,50 +71,56 @@ impl AttackConfig {
             b2b_chaining: false,
             combo_table: ComboTable::Multiplier,
             garbage_multiplier: 1.0,
+            base_attack: [0, SINGLE, DOUBLE, TRIPLE, QUAD, PENTA],
+            mini_spin_attack: [0, SPIN_MINI_SINGLE, SPIN_MINI_DOUBLE, SPIN_MINI_TRIPLE, SPIN_QUAD, SPIN_QUAD + 2],
+            spin_attack: [0, SPIN_SINGLE, SPIN_DOUBLE, SPIN_TRIPLE, SPIN_QUAD, SPIN_PENTA],
+            b2b_bonus: BACK_TO_BACK_BONUS,
         }
     }
 }
 
-fn base_attack(lines: u8, spin: SpinType) -> f32 {
+fn base_attack(lines: u8, spin: SpinType, config: &AttackConfig) -> f32 {
+    let lines_idx = (lines as usize).min(5);
+    let overflow = (lines as i32 - 5).max(0) as f32;
+
     match spin {
-        SpinType::NoSpin => match lines {
-            0 => 0.0,
-            1 => SINGLE as f32,
-            2 => DOUBLE as f32,
-            3 => TRIPLE as f32,
-            4 => QUAD as f32,
-            5 => PENTA as f32,
-            _ => PENTA as f32 + (lines - 5) as f32,
-        },
-        SpinType::Mini => match lines {
-            0 => SPIN_MINI as f32,
-            1 => SPIN_MINI_SINGLE as f32,
-            2 => SPIN_MINI_DOUBLE as f32,
-            3 => SPIN_MINI_TRIPLE as f32,
-            4 => SPIN_QUAD as f32,
-            _ => SPIN_QUAD as f32 + 2.0 * (lines - 4) as f32,
-        },
-        SpinType::Full => match lines {
-            0 => SPIN as f32,
-            1 => SPIN_SINGLE as f32,
-            2 => SPIN_DOUBLE as f32,
-            3 => SPIN_TRIPLE as f32,
-            4 => SPIN_QUAD as f32,
-            5 => SPIN_PENTA as f32,
-            _ => SPIN_PENTA as f32 + 2.0 * (lines - 5) as f32,
-        },
+        SpinType::NoSpin => {
+            let base = config.base_attack[lines_idx] as f32;
+            if overflow > 0.0 {
+                base + overflow
+            } else {
+                base
+            }
+        }
+        SpinType::Mini => {
+            let base = config.mini_spin_attack[lines_idx] as f32;
+            if overflow > 0.0 {
+                base + 2.0 * overflow
+            } else {
+                base
+            }
+        }
+        SpinType::Full => {
+            let base = config.spin_attack[lines_idx] as f32;
+            if overflow > 0.0 {
+                base + 2.0 * overflow
+            } else {
+                base
+            }
+        }
     }
 }
 
-fn b2b_chaining_bonus(b2b: u8) -> f32 {
+fn b2b_chaining_bonus(b2b: u8, config: &AttackConfig) -> f32 {
     if b2b <= 1 {
-        return BACK_TO_BACK_BONUS as f32;
+        return config.b2b_bonus as f32;
     }
-    // floor(1 + ln(1 + b2b * B2B_CHAINING_LOG)) with fractional third
+    let bonus_base = config.b2b_bonus as f32;
+    // floor(bonus_base + ln(1 + b2b * B2B_CHAINING_LOG)) with fractional third
     let log_part = (1.0 + b2b as f32 * B2B_CHAINING_LOG).ln();
-    let floored = (1.0 + log_part).floor();
+    let floored = (bonus_base + log_part).floor();
     // fractional third: the remainder after floor contributes a third
-    let remainder = (1.0 + log_part) - floored;
+    let remainder = (bonus_base + log_part) - floored;
     let third = if remainder > 0.0 {
         remainder / 3.0
     } else {
@@ -124,13 +136,12 @@ fn apply_combo(base: f32, combo: u8, table: ComboTable) -> f32 {
 
     match table {
         ComboTable::Multiplier => {
-            let multiplied = base * (1.0 + COMBO_BONUS * combo as f32);
-            // for combo > 1, log floor is a MINIMUM guarantee (matches Triangle.js)
-            if combo > 1 {
-                let log_floor = (1.0 + combo as f32 * COMBO_FLOOR_SCALE).ln();
-                f32::max(multiplied, log_floor)
+            if base > 0.0 {
+                base * (1.0 + COMBO_BONUS * combo as f32)
+            } else if combo >= 2 {
+                (1.0 + combo as f32 * COMBO_FLOOR_SCALE).ln()
             } else {
-                multiplied
+                0.0
             }
         }
         ComboTable::Classic => {
@@ -191,7 +202,7 @@ pub fn calculate_attack_full(ctx: &AttackContext<'_>) -> f32 {
         return 0.0;
     }
 
-    let mut attack = base_attack(lines, spin);
+    let mut attack = base_attack(lines, spin, config);
 
     // perfect clear bonus
     if is_perfect_clear {
@@ -200,12 +211,12 @@ pub fn calculate_attack_full(ctx: &AttackContext<'_>) -> f32 {
 
     let is_b2b_eligible = spin != SpinType::NoSpin || lines >= 4;
 
-    if b2b > 0 {
-        if config.b2b_chaining {
-            attack += b2b_chaining_bonus(b2b);
-        } else {
-            attack += BACK_TO_BACK_BONUS as f32;
+    if config.b2b_chaining {
+        if b2b > 1 {
+            attack += b2b_chaining_bonus(b2b, config);
         }
+    } else if b2b > 0 {
+        attack += config.b2b_bonus as f32;
     }
 
     // perfect clear B2B bonus (separate from regular B2B)
@@ -232,6 +243,15 @@ pub fn calculate_attack_full(ctx: &AttackContext<'_>) -> f32 {
     attack *= config.garbage_multiplier;
 
     attack
+}
+
+pub fn parse_attack_table(table: &mut [u8; 6], s: &str) {
+    let parts: Vec<&str> = s.split(',').collect();
+    for (i, part) in parts.iter().enumerate().take(6) {
+        if let Ok(val) = part.trim().parse::<u8>() {
+            table[i] = val;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -319,20 +339,30 @@ mod tests {
 
     #[test]
     fn test_b2b_flat_bonus() {
-        // b2b=1, quad, no chaining (QP mode)
-        let dmg = calculate_attack(4, SpinType::NoSpin, 1, 0, &qp(), false);
-        assert_eq!(dmg, 4.0 + 1.0); // QUAD + flat B2B
+        // b2b=1 (first quad) -> no bonus
+        let dmg1 = calculate_attack(4, SpinType::NoSpin, 1, 0, &qp(), false);
+        assert_eq!(dmg1, 4.0);
+
+        // b2b=2 (second quad) -> flat B2B bonus
+        let dmg2 = calculate_attack(4, SpinType::NoSpin, 2, 0, &qp(), false);
+        assert_eq!(dmg2, 4.0 + 1.0); // QUAD + flat B2B
     }
 
     #[test]
     fn test_b2b_chaining_grows() {
-        // b2b=1, quad, chaining enabled (TL mode)
+        // b2b=1 -> no bonus
         let dmg_b2b1 = calculate_attack(4, SpinType::NoSpin, 1, 0, &tl(), false);
+        assert_eq!(dmg_b2b1, 4.0);
+
+        // b2b=2 -> bonus starts
+        let dmg_b2b2 = calculate_attack(4, SpinType::NoSpin, 2, 0, &tl(), false);
+        assert!(dmg_b2b2 > 4.0);
+
         let dmg_b2b5 = calculate_attack(4, SpinType::NoSpin, 5, 0, &tl(), false);
         assert!(
-            dmg_b2b5 > dmg_b2b1,
-            "higher b2b chain should give more damage: b2b1={}, b2b5={}",
-            dmg_b2b1,
+            dmg_b2b5 > dmg_b2b2,
+            "higher b2b chain should give more damage: b2b2={}, b2b5={}",
+            dmg_b2b2,
             dmg_b2b5
         );
     }

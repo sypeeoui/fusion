@@ -191,22 +191,48 @@ fn generate_inner<const P: usize, const CHECK_SPIN: bool>(
                         if CHECK_SPIN {
                             let r1i = r1 as usize;
                             if let Some(smap) = spin_map {
+                                // T-Spin Logic (Piece::T only)
                                 let spins = m & smap[x1u][0];
                                 spin_set[x1u][r1i][SpinType::NoSpin as usize] &= !spins;
                                 spin_set[x1u][r1i][SpinType::NoSpin as usize] |= m ^ spins;
+                                
                                 if spins != 0 {
-                                    spin_set[x1u][r1i][SpinType::Mini as usize] |=
-                                        spins & !smap[x1u][1 + r1i];
-                                    spin_set[x1u][r1i][SpinType::Full as usize] |=
-                                        spins & smap[x1u][1 + r1i];
+                                    // 3-corner check passed
+                                    let mut full = spins & smap[x1u][1 + r1i];
+                                    
+                                    // Kick shortcut: If the rotation succeeded using the last kick (Index 4),
+                                    // it is automatically "upgraded" to a Regular T-Spin.
+                                    // (Only for 90-degree rotations)
+                                    if i == 4 {
+                                        full |= spins;
+                                    }
+                                    
+                                    spin_set[x1u][r1i][SpinType::Mini as usize] |= spins & !full;
+                                    spin_set[x1u][r1i][SpinType::Full as usize] |= spins & full;
+                                }
+                                
+                                // Immobile exception for T-piece: If it fails the 3-corner rule but is immobile,
+                                // it's awarded a T-spin Mini.
+                                let remaining_m = m & !spins;
+                                if remaining_m != 0 {
+                                    let blocked_left = if x1u > 0 { cm.get(x1u - 1, rc) } else { !0u64 };
+                                    let blocked_right = if x1u < COL_NB - 1 { cm.get(x1u + 1, rc) } else { !0u64 };
+                                    let same_col = cm.get(x1u, rc);
+                                    let blocked_up = same_col >> 1;
+                                    let stuck = remaining_m & blocked_left & blocked_right & blocked_up;
+                                    
+                                    spin_set[x1u][r1i][SpinType::NoSpin as usize] &= !stuck;
+                                    spin_set[x1u][r1i][SpinType::Mini as usize] |= stuck;
                                 }
                             } else {
+                                // Non-T piece spin detection (L, J, S, Z, I)
+                                // TETR.IO Immobile Rule: Cannot move Up, Left, or Right
                                 let blocked_left = if x1u > 0 { cm.get(x1u - 1, rc) } else { !0u64 };
                                 let blocked_right = if x1u < COL_NB - 1 { cm.get(x1u + 1, rc) } else { !0u64 };
                                 let same_col = cm.get(x1u, rc);
                                 let blocked_up = same_col >> 1;
-                                let blocked_down = (same_col << 1) | 1;
-                                let stuck = m & blocked_left & blocked_right & blocked_down & blocked_up;
+                                
+                                let stuck = m & blocked_left & blocked_right & blocked_up;
                                 spin_set[x1u][r1i][SpinType::NoSpin as usize] &= !stuck;
                                 spin_set[x1u][r1i][SpinType::Mini as usize] |= stuck;
                                 spin_set[x1u][r1i][SpinType::NoSpin as usize] |= m ^ stuck;
@@ -346,7 +372,7 @@ fn do_rotate_180<const P: usize, const CHECK_SPIN: bool>(ctx: &mut RotateContext
 
     let mut current = ctx.current_search;
 
-    for (i, kick) in kicks.iter().enumerate().take(n) {
+    for (_i, kick) in kicks.iter().enumerate().take(n) {
         if current == 0 {
             break;
         }
@@ -370,26 +396,41 @@ fn do_rotate_180<const P: usize, const CHECK_SPIN: bool>(ctx: &mut RotateContext
         if CHECK_SPIN {
             let r1i = r1 as usize;
             if let Some(smap) = ctx.spin_map {
+                // 180 T-Spin Logic (Piece::T only)
                 let spins = m & smap[x1u][0];
                 ctx.spin_set[x1u][r1i][SpinType::NoSpin as usize] &= !spins;
                 ctx.spin_set[x1u][r1i][SpinType::NoSpin as usize] |= m ^ spins;
+                
                 if spins != 0 {
-                    if i >= 4 {
-                        ctx.spin_set[x1u][r1i][SpinType::Full as usize] |= spins;
-                    } else {
-                        ctx.spin_set[x1u][r1i][SpinType::Mini as usize] |=
-                            spins & !smap[x1u][1 + r1i];
-                        ctx.spin_set[x1u][r1i][SpinType::Full as usize] |=
-                            spins & smap[x1u][1 + r1i];
-                    }
+                    // 3-corner check passed
+                    // Note: No kick upgrade for 180s in TETR.IO
+                    let full = spins & smap[x1u][1 + r1i];
+                    ctx.spin_set[x1u][r1i][SpinType::Mini as usize] |= spins & !full;
+                    ctx.spin_set[x1u][r1i][SpinType::Full as usize] |= spins & full;
+                }
+                
+                // Immobile exception for T-piece: If it fails the 3-corner rule but is immobile,
+                // it's awarded a T-spin Mini.
+                let remaining_m = m & !spins;
+                if remaining_m != 0 {
+                    let blocked_left = if x1u > 0 { ctx.cm.get(x1u - 1, rc) } else { !0u64 };
+                    let blocked_right = if x1u < COL_NB - 1 { ctx.cm.get(x1u + 1, rc) } else { !0u64 };
+                    let same_col = ctx.cm.get(x1u, rc);
+                    let blocked_up = same_col >> 1;
+                    let stuck = remaining_m & blocked_left & blocked_right & blocked_up;
+                    
+                    ctx.spin_set[x1u][r1i][SpinType::NoSpin as usize] &= !stuck;
+                    ctx.spin_set[x1u][r1i][SpinType::Mini as usize] |= stuck;
                 }
             } else {
+                // 180 Non-T piece spin detection (L, J, S, Z, I)
+                // TETR.IO Immobile Rule: Cannot move Up, Left, or Right
                 let blocked_left = if x1u > 0 { ctx.cm.get(x1u - 1, rc) } else { !0u64 };
                 let blocked_right = if x1u < COL_NB - 1 { ctx.cm.get(x1u + 1, rc) } else { !0u64 };
                 let same_col = ctx.cm.get(x1u, rc);
                 let blocked_up = same_col >> 1;
-                let blocked_down = (same_col << 1) | 1;
-                let stuck = m & blocked_left & blocked_right & blocked_down & blocked_up;
+                
+                let stuck = m & blocked_left & blocked_right & blocked_up;
                 ctx.spin_set[x1u][r1i][SpinType::NoSpin as usize] &= !stuck;
                 ctx.spin_set[x1u][r1i][SpinType::Mini as usize] |= stuck;
                 ctx.spin_set[x1u][r1i][SpinType::NoSpin as usize] |= m ^ stuck;

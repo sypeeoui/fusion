@@ -226,6 +226,19 @@ impl Move {
         SpinType::from_u8(val)
     }
 
+    pub const fn is_tspin(self) -> bool {
+        let piece_raw = (self.data >> 10) & 0x7;
+        piece_raw == TSPIN
+    }
+
+    pub const fn is_mini(self) -> bool {
+        matches!(self.spin(), SpinType::Mini)
+    }
+
+    pub const fn is_full(self) -> bool {
+        matches!(self.spin(), SpinType::Full)
+    }
+
     pub const fn x(self) -> i32 {
         ((self.data >> 6) & 0xF) as i32
     }

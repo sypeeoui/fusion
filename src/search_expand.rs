@@ -62,9 +62,10 @@ pub(crate) fn gen_and_eval_root(
         let lines_cleared = result_board.do_move(m) as u8;
         let next_pending_garbage = state.pending_garbage.saturating_sub(lines_cleared);
         let spawn_envelope_blocked = GameState::spawn_envelope_blocked(&result_board);
+        let is_perfect_clear = result_board.is_empty();
 
         let (next_b2b, next_combo) =
-            GameState::next_chain_values(state.b2b, state.combo, m, lines_cleared);
+            GameState::next_chain_values(state.b2b, state.combo, m, lines_cleared, is_perfect_clear);
         let coaching = state.coaching.transition(TransitionObservation {
             resulting_height: result_board.height(),
             resulting_b2b: next_b2b,
@@ -90,7 +91,6 @@ pub(crate) fn gen_and_eval_root(
             None
         };
         let clears_garbage = state.pending_garbage > 0 && lines_cleared > 0;
-        let is_perfect_clear = result_board.is_empty();
         let attack_val = calculate_attack_full(&AttackContext {
             lines: lines_cleared,
             spin: m.spin(),
@@ -101,6 +101,14 @@ pub(crate) fn gen_and_eval_root(
             b2b_broken_from,
             clears_garbage,
         });
+
+        // B2B breaking penalty: if b2b was active and is now broken by a non-difficult clear
+        let b2b_break_penalty = if state.b2b > 0 && next_b2b == 0 && lines_cleared > 0 {
+            state.b2b as f32 * ctx.config.b2b_weight
+        } else {
+            0.0
+        };
+
         let clear_event = if lines_cleared > 0 {
             Some(ClearEvent {
                 clear_type: ClearType::from_lines(lines_cleared),
@@ -128,8 +136,23 @@ pub(crate) fn gen_and_eval_root(
         let context_mod = shape_context_modifier(
             combo_context + coaching_context_bias(state.coaching, coaching),
         );
-        let composite_score =
-            assemble_composite(board_eval, attack_val, chain_val, context_mod, ctx.config);
+
+        let spin_structural_bonus = if m.is_full() {
+            ctx.weights.spin_full
+        } else if m.is_mini() {
+            ctx.weights.spin_mini
+        } else {
+            0.0
+        };
+
+        let composite_score = assemble_composite(
+            board_eval + spin_structural_bonus,
+            attack_val,
+            chain_val,
+            next_b2b as f32,
+            context_mod,
+            ctx.config,
+        ) - b2b_break_penalty;
 
         nodes.push(SearchNode {
             board: result_board,
@@ -142,9 +165,10 @@ pub(crate) fn gen_and_eval_root(
             root_move: *m,
             root_hold_used: hold_used,
             path: smallvec![*m],
-            board_score: board_eval,
+            board_score: board_eval + spin_structural_bonus,
             attack_score: attack_val,
             chain_score: chain_val,
+            b2b_score: next_b2b as f32,
             context_score: context_mod,
             path_attack: attack_val,
             path_chain: chain_val,
@@ -174,9 +198,10 @@ pub(crate) fn expand_node(
         let lines_cleared = result_board.do_move(m) as u8;
         let next_pending_garbage = parent.pending_garbage.saturating_sub(lines_cleared);
         let spawn_envelope_blocked = GameState::spawn_envelope_blocked(&result_board);
+        let is_perfect_clear = result_board.is_empty();
 
         let (next_b2b, next_combo) =
-            GameState::next_chain_values(parent.b2b, parent.combo, m, lines_cleared);
+            GameState::next_chain_values(parent.b2b, parent.combo, m, lines_cleared, is_perfect_clear);
         let coaching = parent.coaching.transition(TransitionObservation {
             resulting_height: result_board.height(),
             resulting_b2b: next_b2b,
@@ -202,7 +227,6 @@ pub(crate) fn expand_node(
             None
         };
         let clears_garbage = parent.pending_garbage > 0 && lines_cleared > 0;
-        let is_perfect_clear = result_board.is_empty();
         let attack_val = calculate_attack_full(&AttackContext {
             lines: lines_cleared,
             spin: m.spin(),
@@ -213,6 +237,14 @@ pub(crate) fn expand_node(
             b2b_broken_from,
             clears_garbage,
         });
+
+        // B2B breaking penalty: if b2b was active and is now broken by a non-difficult clear
+        let b2b_break_penalty = if parent.b2b > 0 && next_b2b == 0 && lines_cleared > 0 {
+            parent.b2b as f32 * ctx.config.b2b_weight
+        } else {
+            0.0
+        };
+
         let clear_event = if lines_cleared > 0 {
             Some(ClearEvent {
                 clear_type: ClearType::from_lines(lines_cleared),
@@ -240,18 +272,28 @@ pub(crate) fn expand_node(
         let context_mod = shape_context_modifier(
             combo_context + coaching_context_bias(parent.coaching, coaching),
         );
+
+        let spin_structural_bonus = if m.is_full() {
+            ctx.weights.spin_full
+        } else if m.is_mini() {
+            ctx.weights.spin_mini
+        } else {
+            0.0
+        };
+
         let cum_attack = parent.path_attack + attack_val;
         let cum_chain = parent.path_chain + chain_val;
         let depth_factor = (parent.path.len() as f32 + 1.0)
             .sqrt()
             .min(ctx.config.max_depth_factor);
         let composite_score = assemble_composite(
-            board_eval,
+            board_eval + spin_structural_bonus,
             cum_attack / depth_factor,
             cum_chain / depth_factor,
+            next_b2b as f32,
             context_mod,
             ctx.config,
-        );
+        ) - b2b_break_penalty;
 
         let mut path: SmallVec<[Move; 16]> = parent.path.clone();
         path.push(*m);
@@ -267,9 +309,10 @@ pub(crate) fn expand_node(
             root_move: parent.root_move,
             root_hold_used: parent.root_hold_used,
             path,
-            board_score: board_eval,
+            board_score: board_eval + spin_structural_bonus,
             attack_score: attack_val,
             chain_score: chain_val,
+            b2b_score: next_b2b as f32,
             context_score: context_mod,
             path_attack: parent.path_attack + attack_val,
             path_chain: parent.path_chain + chain_val,

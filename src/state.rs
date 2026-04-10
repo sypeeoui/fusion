@@ -336,16 +336,22 @@ impl GameState {
         current_combo: u32,
         m: &Move,
         lines_cleared: u8,
+        is_perfect_clear: bool,
     ) -> (u8, u32) {
         if lines_cleared == 0 {
             return (current_b2b, 0);
         }
 
-        let next_b2b = if m.spin() != SpinType::NoSpin || lines_cleared == 4 {
+        let mut next_b2b = if m.spin() != SpinType::NoSpin || lines_cleared == 4 {
             current_b2b.saturating_add(1)
         } else {
             0
         };
+
+        if is_perfect_clear {
+            next_b2b = next_b2b.saturating_add(2);
+        }
+
         let next_combo = current_combo.saturating_add(1);
         (next_b2b, next_combo)
     }
@@ -357,9 +363,10 @@ impl GameState {
         hold_used: bool,
         resulting_height: u32,
         spawn_envelope_blocked: bool,
+        is_perfect_clear: bool,
     ) -> CoachingState {
         let (resulting_b2b, resulting_combo) =
-            Self::next_chain_values(self.b2b, self.combo, m, lines_cleared);
+            Self::next_chain_values(self.b2b, self.combo, m, lines_cleared, is_perfect_clear);
         let imminent_garbage = self.pending_garbage.saturating_sub(lines_cleared);
         self.coaching.transition(TransitionObservation {
             resulting_height,
@@ -380,9 +387,10 @@ impl GameState {
         hold_used: bool,
         resulting_height: u32,
         spawn_envelope_blocked: bool,
+        is_perfect_clear: bool,
     ) {
         let (next_b2b, next_combo) =
-            Self::next_chain_values(self.b2b, self.combo, m, lines_cleared);
+            Self::next_chain_values(self.b2b, self.combo, m, lines_cleared, is_perfect_clear);
         let imminent_garbage = self.pending_garbage.saturating_sub(lines_cleared);
         self.b2b = next_b2b;
         self.combo = next_combo;
@@ -456,7 +464,8 @@ mod tests {
             let mut board_after_a = state_a.board.clone();
             let lines_a = board_after_a.do_move(&selected_a) as u8;
             let height_a = board_after_a.height();
-            state_a.apply_move_transition(&selected_a, lines_a, false, height_a, false);
+            let is_pc_a = board_after_a.is_empty();
+            state_a.apply_move_transition(&selected_a, lines_a, false, height_a, false, is_pc_a);
             state_a.board = board_after_a;
             state_a.current = state_a.queue_piece(0).unwrap_or(Piece::I);
             snapshots_a.push(state_a.coaching.to_deterministic_string());
@@ -467,7 +476,8 @@ mod tests {
             let mut board_after_b = state_b.board.clone();
             let lines_b = board_after_b.do_move(&selected_b) as u8;
             let height_b = board_after_b.height();
-            state_b.apply_move_transition(&selected_b, lines_b, false, height_b, false);
+            let is_pc_b = board_after_b.is_empty();
+            state_b.apply_move_transition(&selected_b, lines_b, false, height_b, false, is_pc_b);
             state_b.board = board_after_b;
             state_b.current = state_b.queue_piece(0).unwrap_or(Piece::I);
             snapshots_b.push(state_b.coaching.to_deterministic_string());
@@ -520,23 +530,30 @@ mod tests {
     #[test]
     fn test_next_chain_values() {
         let m_tspin = Move::new_tspin(Rotation::North, 4, 0, true);
-        let (b2b_after_tspin, combo_after_tspin) = GameState::next_chain_values(2, 3, &m_tspin, 2);
+        let (b2b_after_tspin, combo_after_tspin) = GameState::next_chain_values(2, 3, &m_tspin, 2, false);
         assert_eq!(b2b_after_tspin, 3);
         assert_eq!(combo_after_tspin, 4);
 
         let m_flat = Move::new(Piece::I, Rotation::North, 4, 0, false);
-        let (b2b_after_zero, combo_after_zero) = GameState::next_chain_values(3, 4, &m_flat, 0);
+        let (b2b_after_zero, combo_after_zero) = GameState::next_chain_values(3, 4, &m_flat, 0, false);
         assert_eq!(b2b_after_zero, 3, "b2b must be preserved when no lines cleared");
         assert_eq!(combo_after_zero, 0, "combo resets when no lines cleared");
 
         // Non-difficult line clear (e.g., single/double/triple without spin) resets b2b
-        let (b2b_after_single, combo_after_single) = GameState::next_chain_values(3, 4, &m_flat, 1);
+        let (b2b_after_single, combo_after_single) = GameState::next_chain_values(3, 4, &m_flat, 1, false);
         assert_eq!(b2b_after_single, 0, "b2b resets on non-difficult line clear");
         assert_eq!(combo_after_single, 5, "combo increments on any line clear");
 
         // Quad preserves/increments b2b
-        let (b2b_after_quad, combo_after_quad) = GameState::next_chain_values(3, 4, &m_flat, 4);
+        let (b2b_after_quad, combo_after_quad) = GameState::next_chain_values(3, 4, &m_flat, 4, false);
         assert_eq!(b2b_after_quad, 4, "b2b increments on quad");
         assert_eq!(combo_after_quad, 5, "combo increments on quad");
+
+        // All Clear gives +2 B2B
+        let (b2b_pc, _) = GameState::next_chain_values(0, 0, &m_flat, 2, true);
+        assert_eq!(b2b_pc, 2, "All Clear with Double should give 2 B2B (0+0+2)");
+
+        let (b2b_pc_quad, _) = GameState::next_chain_values(1, 10, &m_flat, 4, true);
+        assert_eq!(b2b_pc_quad, 4, "All Clear with Quad should give 4 B2B (1+1+2)");
     }
 }

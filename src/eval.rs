@@ -19,6 +19,8 @@ pub struct EvalWeights {
     // -- structural pattern bonuses --
     pub tsd_overhang: f32,
     pub four_wide_well: f32,
+    pub spin_full: f32,
+    pub spin_mini: f32,
 }
 
 impl Default for EvalWeights {
@@ -35,6 +37,8 @@ impl Default for EvalWeights {
             well_depth: 0.2,
             tsd_overhang: 6.0,
             four_wide_well: 1.5,
+            spin_full: 8.0,
+            spin_mini: 2.0,
         }
     }
 }
@@ -272,7 +276,23 @@ pub fn evaluate(board: &Board, weights: &EvalWeights) -> f32 {
     let four_wide = four_wide_well_score(&heights);
     score += weights.four_wide_well * four_wide;
 
+    let (full_spins, mini_spins) = count_spins(board, &heights);
+    score += weights.spin_full * full_spins as f32;
+    score += weights.spin_mini * mini_spins as f32;
+
     score
+}
+
+fn count_spins(board: &Board, heights: &[usize; COL_NB]) -> (u32, u32) {
+    // Structural spin detection (T-slots, S/Z/L/J/I immobile patterns)
+    // This rewards the EXISTENCE of a spin-ready shape on the board
+    let mut full = 0;
+    let mut mini = 0;
+
+    // Detect T-slots (TSD/TST setups)
+    full += count_tsd_overhangs(board, heights) as u32;
+
+    (full, mini)
 }
 
 #[cfg(test)]

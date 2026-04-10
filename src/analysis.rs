@@ -243,12 +243,14 @@ pub fn assemble_composite(
     board: f32,
     attack: f32,
     chain: f32,
+    b2b: f32,
     context: f32,
     config: &SearchConfig,
 ) -> f32 {
     board * config.board_weight
         + attack * config.attack_weight
         + chain * config.chain_weight
+        + b2b * config.b2b_weight
         + context * config.context_weight
 }
 
@@ -404,12 +406,14 @@ fn analyze_move_inner(
     let inferred_hold_used = state.infer_hold_used_for_piece(actual_move.piece());
     let spawn_envelope_blocked = GameState::spawn_envelope_blocked(&result_board);
     let coaching_before = state.coaching;
+    let is_perfect_clear = result_board.is_empty();
     let coaching_after = state.transition_for_move(
         actual_move,
         lines_cleared,
         inferred_hold_used,
         result_board.height(),
         spawn_envelope_blocked,
+        is_perfect_clear,
     );
 
     let search_result = find_best_move_with_scores(state, config, weights);
@@ -880,11 +884,13 @@ mod tests {
         let board = 2.0;
         let attack = 3.0;
         let chain = 4.0;
+        let b2b = 5.0;
         let context = -1.0;
-        let composite = assemble_composite(board, attack, chain, context, &config);
+        let composite = assemble_composite(board, attack, chain, b2b, context, &config);
         let expected = board * config.board_weight
             + attack * config.attack_weight
             + chain * config.chain_weight
+            + b2b * config.b2b_weight
             + context * config.context_weight;
         assert_eq!(composite, expected);
     }

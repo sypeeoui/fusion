@@ -208,7 +208,7 @@ fn get_input_inner(
                     arr.len()
                 };
 
-                for (k, &kick) in kick_buf.iter().enumerate().take(kick_count) {
+                for (_k, &kick) in kick_buf.iter().enumerate().take(kick_count) {
                     let x1 = m.x as i32 + kick.x as i32 + off.x as i32;
                     let y1 = y as i32 + kick.y as i32 + off.y as i32;
 

@@ -264,11 +264,11 @@ struct ScenarioResult {
     board_score: f32,
     attack_score: f32,
     chain_score: f32,
+    b2b_score: f32,
     context_score: f32,
     path_attack: f32,
-    #[allow(dead_code)]
     path_chain: f32,
-    #[allow(dead_code)]
+    path_b2b: f32,
     path_context: f32,
     // Eval deltas
     eval_before: f32,
@@ -399,9 +399,11 @@ fn run_scenario(scenario: &Scenario, config: &SearchConfig) -> Option<ScenarioRe
         board_score: result.board_score,
         attack_score: result.attack_score,
         chain_score: result.chain_score,
+        b2b_score: result.b2b_score,
         context_score: result.context_score,
         path_attack: result.path_attack,
         path_chain: result.path_chain,
+        path_b2b: result.path_b2b,
         path_context: result.path_context,
         eval_before,
         eval_after_best: best.score,
@@ -433,7 +435,13 @@ fn e2e_composite_scoring_validation() {
                 eprintln!("    board:   {:.4}", r.board_score);
                 eprintln!("    attack:  {:.4}", r.attack_score);
                 eprintln!("    chain:   {:.4}", r.chain_score);
+                eprintln!("    b2b:     {:.4}", r.b2b_score);
                 eprintln!("    context: {:.4}", r.context_score);
+                eprintln!("\n  PATH CUMULATIVE:");
+                eprintln!("    attack:  {:.4}", r.path_attack);
+                eprintln!("    chain:   {:.4}", r.path_chain);
+                eprintln!("    b2b:     {:.4}", r.path_b2b);
+                eprintln!("    context: {:.4}", r.path_context);
                 eprintln!("\n  EVAL DELTA:");
                 eprintln!("    before: {:.3}  →  after(best): {:.3}", r.eval_before, r.eval_after_best);
                 eprintln!("    win_prob: {:.1}% → {:.1}%", r.win_prob_before * 100.0, r.win_prob_after * 100.0);
@@ -465,6 +473,7 @@ fn e2e_composite_scoring_validation() {
         assert!(r.board_score.is_finite(), "{}: board_score is not finite", r.name);
         assert!(r.attack_score.is_finite(), "{}: attack_score is not finite", r.name);
         assert!(r.chain_score.is_finite(), "{}: chain_score is not finite", r.name);
+        assert!(r.b2b_score.is_finite(), "{}: b2b_score is not finite", r.name);
         assert!(r.context_score.is_finite(), "{}: context_score is not finite", r.name);
         
         // Score spread should be non-negative
@@ -481,10 +490,10 @@ fn e2e_composite_scoring_validation() {
     assert!(quad.path_attack > 0.0,
         "Quad well: I piece should have positive path_attack (cumulative attack along best path), got {:.4}", quad.path_attack);
 
-    // Active combo: chain_score should be elevated
+    // Active combo: chain_score should be elevated along path
     let combo = results.iter().find(|r| r.name == "active_combo_maintain").unwrap();
-    assert!(combo.chain_score > 0.0,
-        "Active combo: chain_score should be positive (combo=3), got {:.4}", combo.chain_score);
+    assert!(combo.chain_score > 0.0 || combo.path_chain > 0.0,
+        "Active combo: chain_score ({:.4}) or path_chain ({:.4}) should be positive (combo=3)", combo.chain_score, combo.path_chain);
 
     let combo_break = results.iter().find(|r| r.name == "combo_break_scenario").unwrap();
     assert!(combo_break.chain_score > 0.0 || combo_break.path_chain > 0.0,

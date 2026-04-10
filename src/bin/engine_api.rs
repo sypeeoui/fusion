@@ -48,10 +48,21 @@ struct SearchOverrides {
     extend_queue_7bag: Option<bool>,
     attack_weight: Option<f32>,
     chain_weight: Option<f32>,
+    b2b_weight: Option<f32>,
+    spin_full_weight: Option<f32>,
+    spin_mini_weight: Option<f32>,
     context_weight: Option<f32>,
     board_weight: Option<f32>,
     quiescence_max_extensions: Option<usize>,
     quiescence_beam_fraction: Option<f32>,
+    pc_garbage: Option<u8>,
+    pc_b2b: Option<u8>,
+    b2b_chaining: Option<bool>,
+    b2b_bonus: Option<u8>,
+    base_attack: Option<String>,
+    mini_spin_attack: Option<String>,
+    spin_attack: Option<String>,
+    combo_table: Option<u8>,
 }
 
 #[derive(Deserialize)]
@@ -132,9 +143,11 @@ struct PositionEvalResponse {
     board_score: f32,
     attack_score: f32,
     chain_score: f32,
+    b2b_score: f32,
     context_score: f32,
     path_attack: f32,
     path_chain: f32,
+    path_b2b: f32,
     path_context: f32,
     recommended_path: Vec<MoveJson>,
     insight_tags: Vec<String>,
@@ -203,7 +216,7 @@ async fn find_best_move_handler(
     game_state.pending_garbage = req.pending_garbage.unwrap_or(0);
 
     let config = apply_search_overrides(req.search.as_ref());
-    let weights = EvalWeights::default();
+    let weights = apply_eval_overrides(req.search.as_ref());
 
     let full = find_best_move_with_scores(&game_state, &config, &weights).ok_or_else(|| {
         Json(ErrorResponse {
@@ -310,10 +323,8 @@ async fn evaluate_position_handler(
 
     let mut config = apply_search_overrides(req.search.as_ref());
     config.time_budget_ms = None;
-    config.attack_config.pc_garbage = 0;
-    config.attack_config.pc_b2b = 0;
 
-    let weights = EvalWeights::default();
+    let weights = apply_eval_overrides(req.search.as_ref());
 
     let eval_before = evaluate(&game_state.board, &weights);
     let eval_after = evaluate(&post_board, &weights);
@@ -411,9 +422,11 @@ async fn evaluate_position_handler(
         board_score: full_result.board_score,
         attack_score: full_result.attack_score,
         chain_score: full_result.chain_score,
+        b2b_score: full_result.b2b_score,
         context_score: full_result.context_score,
         path_attack: full_result.path_attack,
         path_chain: full_result.path_chain,
+        path_b2b: full_result.path_b2b,
         path_context: full_result.path_context,
         recommended_path: sr
             .pv
@@ -482,6 +495,9 @@ fn apply_search_overrides(overrides: Option<&SearchOverrides>) -> SearchConfig {
         if let Some(x) = v.chain_weight {
             out.chain_weight = x;
         }
+        if let Some(x) = v.b2b_weight {
+            out.b2b_weight = x;
+        }
         if let Some(x) = v.context_weight {
             out.context_weight = x;
         }
@@ -493,6 +509,48 @@ fn apply_search_overrides(overrides: Option<&SearchOverrides>) -> SearchConfig {
         }
         if let Some(x) = v.quiescence_beam_fraction {
             out.quiescence_beam_fraction = x;
+        }
+        if let Some(x) = v.pc_garbage {
+            out.attack_config.pc_garbage = x;
+        }
+        if let Some(x) = v.pc_b2b {
+            out.attack_config.pc_b2b = x;
+        }
+        if let Some(x) = v.b2b_chaining {
+            out.attack_config.b2b_chaining = x;
+        }
+        if let Some(x) = v.b2b_bonus {
+            out.attack_config.b2b_bonus = x;
+        }
+        if let Some(ref x) = v.base_attack {
+            direct_cobra_copy::attack::parse_attack_table(&mut out.attack_config.base_attack, x);
+        }
+        if let Some(ref x) = v.mini_spin_attack {
+            direct_cobra_copy::attack::parse_attack_table(&mut out.attack_config.mini_spin_attack, x);
+        }
+        if let Some(ref x) = v.spin_attack {
+            direct_cobra_copy::attack::parse_attack_table(&mut out.attack_config.spin_attack, x);
+        }
+        if let Some(x) = v.combo_table {
+            out.attack_config.combo_table = match x {
+                0 => direct_cobra_copy::attack::ComboTable::Multiplier,
+                1 => direct_cobra_copy::attack::ComboTable::Classic,
+                2 => direct_cobra_copy::attack::ComboTable::Modern,
+                _ => direct_cobra_copy::attack::ComboTable::None,
+            };
+        }
+    }
+    out
+}
+
+fn apply_eval_overrides(overrides: Option<&SearchOverrides>) -> EvalWeights {
+    let mut out = EvalWeights::default();
+    if let Some(v) = overrides {
+        if let Some(x) = v.spin_full_weight {
+            out.spin_full = x;
+        }
+        if let Some(x) = v.spin_mini_weight {
+            out.spin_mini = x;
         }
     }
     out

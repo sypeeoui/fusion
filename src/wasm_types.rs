@@ -19,9 +19,9 @@ pub(crate) fn to_js<T: serde::Serialize>(val: &T) -> JsValue {
 }
 
 pub(crate) fn from_js<T: serde::de::DeserializeOwned>(js_val: JsValue) -> Option<T> {
-    js_sys::JSON::stringify(&js_val)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s.as_string().unwrap_or_default()).ok())
+    let s = js_sys::JSON::stringify(&js_val).ok()?.as_string()?;
+    web_sys::console::log_1(&format!("Fusion WASM from_js raw: {}", s).into());
+    serde_json::from_str(&s).ok()
 }
 
 // piece ordering: WASM uses Fusion v1 (I O T S Z J L), internal uses Cobra (I O T L J S Z)
@@ -200,6 +200,33 @@ pub(crate) struct ReplayFrameContextJson {
     pub hold_used: Option<bool>,
     pub pending_garbage: Option<u32>,
     pub imminent_garbage: Option<u32>,
+    // Search overrides
+    pub search: Option<SearchOverridesJson>,
+}
+
+#[derive(serde::Deserialize)]
+pub(crate) struct SearchOverridesJson {
+    pub beam_width: Option<usize>,
+    pub depth: Option<usize>,
+    pub futility_delta: Option<f32>,
+    pub time_budget_ms: Option<u64>,
+    pub use_tt: Option<bool>,
+    pub extend_queue_7bag: Option<bool>,
+    pub attack_weight: Option<f32>,
+    pub chain_weight: Option<f32>,
+    pub b2b_weight: Option<f32>,
+    pub spin_full_weight: Option<f32>,
+    pub spin_mini_weight: Option<f32>,
+    pub context_weight: Option<f32>,
+    pub board_weight: Option<f32>,
+    pub pc_garbage: Option<u8>,
+    pub pc_b2b: Option<u8>,
+    pub b2b_chaining: Option<bool>,
+    pub b2b_bonus: Option<u8>,
+    pub base_attack: Option<String>,
+    pub mini_spin_attack: Option<String>,
+    pub spin_attack: Option<String>,
+    pub combo_table: Option<u8>,
 }
 
 

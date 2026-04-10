@@ -64,6 +64,10 @@ impl JsAttackConfig {
                 b2b_chaining,
                 combo_table: ct,
                 garbage_multiplier,
+                base_attack: [0, 0, 1, 2, 4, 5],
+                mini_spin_attack: [0, 0, 1, 2, 10, 12],
+                spin_attack: [0, 2, 4, 6, 10, 12],
+                b2b_bonus: 1,
             },
         }
     }
@@ -130,21 +134,30 @@ pub fn evaluate_position_wasm(
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let p = piece_from_external(piece)?;
         let frame_context = from_js::<ReplayFrameContextJson>(frame);
-        let state = game_state_from_external_context(
+        let mut state = game_state_from_external_context(
             pre_board_clone,
             p,
             frame_context.as_ref().and_then(|ctx| ctx.queue.as_deref()),
             frame_context.as_ref().and_then(|ctx| ctx.hold),
         );
 
-        let weights = EvalWeights::default();
+        let mut weights = EvalWeights::default();
         let mut config = SearchConfig {
             time_budget_ms: None, // Presim coaching — no time limit, full beam search
             ..SearchConfig::default()
         };
-        // PCs are unrealistic coaching advice, zero the bonus so it doesn't skew eval
-        config.attack_config.pc_garbage = 0;
-        config.attack_config.pc_b2b = 0;
+
+        if let Some(ctx) = frame_context.as_ref() {
+            apply_search_overrides_wasm(&mut config, ctx.search.as_ref());
+            apply_eval_overrides_wasm(&mut weights, ctx.search.as_ref());
+            state.b2b = ctx.b2b.unwrap_or(0) as u8;
+            state.combo = ctx.combo.unwrap_or(0) as u32;
+            state.pending_garbage = ctx.pending_garbage.unwrap_or(0) as u8;
+        } else {
+            web_sys::console::log_1(&"Fusion WASM: Failed to parse frame context".into());
+        }
+
+        web_sys::console::log_1(&format!("Fusion WASM: Initial state height: {}", state.board.height()).into());
 
         let eval_before = evaluate(&state.board, &weights);
         let eval_after = evaluate(&post_board_clone, &weights);
@@ -402,6 +415,92 @@ pub fn evaluate_position_wasm(
     }
 }
 
+fn apply_search_overrides_wasm(config: &mut SearchConfig, overrides: Option<&SearchOverridesJson>) {
+    if let Some(v) = overrides {
+        if let Some(x) = v.beam_width {
+            config.beam_width = x;
+        }
+        if let Some(x) = v.depth {
+            config.depth = x;
+        }
+        if let Some(x) = v.futility_delta {
+            config.futility_delta = x;
+        }
+        if let Some(x) = v.time_budget_ms {
+            config.time_budget_ms = Some(x);
+        }
+        if let Some(x) = v.use_tt {
+            config.use_tt = x;
+        }
+        if let Some(x) = v.extend_queue_7bag {
+            config.extend_queue_7bag = x;
+        }
+        if let Some(x) = v.attack_weight {
+            config.attack_weight = x;
+        }
+        if let Some(x) = v.chain_weight {
+            config.chain_weight = x;
+        }
+        if let Some(x) = v.b2b_weight {
+            config.b2b_weight = x;
+        }
+        if let Some(x) = v.context_weight {
+            config.context_weight = x;
+        }
+        if let Some(x) = v.board_weight {
+            config.board_weight = x;
+        }
+        if let Some(x) = v.pc_garbage {
+            config.attack_config.pc_garbage = x;
+            web_sys::console::log_1(&format!("Fusion WASM: pc_garbage: {}", x).into());
+        }
+        if let Some(x) = v.pc_b2b {
+            config.attack_config.pc_b2b = x;
+            web_sys::console::log_1(&format!("Fusion WASM: pc_b2b: {}", x).into());
+        }
+        if let Some(x) = v.b2b_chaining {
+            config.attack_config.b2b_chaining = x;
+            web_sys::console::log_1(&format!("Fusion WASM: b2b_chaining: {}", x).into());
+        }
+        if let Some(x) = v.b2b_bonus {
+            config.attack_config.b2b_bonus = x;
+            web_sys::console::log_1(&format!("Fusion WASM: b2b_bonus: {}", x).into());
+        }
+        if let Some(ref x) = v.base_attack {
+            attack::parse_attack_table(&mut config.attack_config.base_attack, x);
+            web_sys::console::log_1(&format!("Fusion WASM: base_attack: {:?}", config.attack_config.base_attack).into());
+        }
+        if let Some(ref x) = v.mini_spin_attack {
+            attack::parse_attack_table(&mut config.attack_config.mini_spin_attack, x);
+            web_sys::console::log_1(&format!("Fusion WASM: mini_spin_attack: {:?}", config.attack_config.mini_spin_attack).into());
+        }
+        if let Some(ref x) = v.spin_attack {
+            attack::parse_attack_table(&mut config.attack_config.spin_attack, x);
+            web_sys::console::log_1(&format!("Fusion WASM: spin_attack: {:?}", config.attack_config.spin_attack).into());
+        }
+        if let Some(x) = v.combo_table {
+            config.attack_config.combo_table = match x {
+                0 => ComboTable::Multiplier,
+                1 => ComboTable::Classic,
+                2 => ComboTable::Modern,
+                _ => ComboTable::None,
+            };
+            web_sys::console::log_1(&format!("Fusion WASM: combo_table: {:?}", config.attack_config.combo_table).into());
+        }
+    }
+}
+
+fn apply_eval_overrides_wasm(weights: &mut EvalWeights, overrides: Option<&SearchOverridesJson>) {
+    if let Some(v) = overrides {
+        if let Some(x) = v.spin_full_weight {
+            weights.spin_full = x;
+        }
+        if let Some(x) = v.spin_mini_weight {
+            weights.spin_mini = x;
+        }
+    }
+}
+
 #[wasm_bindgen(js_name = "find_best_move")]
 pub fn find_best_move_wasm(board: &JsBoard, piece: u8, frame: JsValue) -> JsValue {
     let board_clone = board.inner.clone();
@@ -409,20 +508,31 @@ pub fn find_best_move_wasm(board: &JsBoard, piece: u8, frame: JsValue) -> JsValu
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let p = piece_from_external(piece)?;
         let frame_context = from_js::<ReplayFrameContextJson>(frame);
-        let state = game_state_from_external_context(
+        
+        let mut state = game_state_from_external_context(
             board_clone,
             p,
             frame_context.as_ref().and_then(|ctx| ctx.queue.as_deref()),
             frame_context.as_ref().and_then(|ctx| ctx.hold),
         );
 
-        let weights = EvalWeights::default();
+        let mut weights = EvalWeights::default();
         let mut config = SearchConfig {
             time_budget_ms: Some(50),
             ..SearchConfig::default()
         };
-        config.attack_config.pc_garbage = 0;
-        config.attack_config.pc_b2b = 0;
+        
+        if let Some(ctx) = frame_context.as_ref() {
+            apply_search_overrides_wasm(&mut config, ctx.search.as_ref());
+            apply_eval_overrides_wasm(&mut weights, ctx.search.as_ref());
+            state.b2b = ctx.b2b.unwrap_or(0) as u8;
+            state.combo = ctx.combo.unwrap_or(0) as u32;
+            state.pending_garbage = ctx.pending_garbage.unwrap_or(0) as u8;
+        } else {
+            web_sys::console::log_1(&"Fusion WASM: Failed to parse frame context".into());
+        }
+
+        web_sys::console::log_1(&format!("Fusion WASM: Initial state height: {}", state.board.height()).into());
 
         let search_result = find_best_move(&state, &config, &weights)?;
         Some(MoveResultJson {
@@ -569,11 +679,9 @@ pub fn simulate_coaching_sequence_wasm(board: &JsBoard, path: JsValue) -> JsValu
         const MIN_COACHING_STEPS: usize = 5;
         if steps.len() > MIN_COACHING_STEPS {
             let mut last_attack_idx = 0usize;
-            let mut cumulative_attack = 0.0f32;
             for (i, step) in steps.iter().enumerate() {
                 if let Some(ref ce) = step.clear_event {
                     if ce.attack_sent > 0.0 {
-                        cumulative_attack += ce.attack_sent;
                         last_attack_idx = i;
                     }
                 }
