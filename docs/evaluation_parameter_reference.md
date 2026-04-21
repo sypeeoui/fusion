@@ -171,6 +171,41 @@ These are nested inside `search: { ... }`.
 - Typical default: `1.0`
 - Meaning: weight for board quality (shape/safety/efficiency).
 
+### path_decay
+
+- Type: `number`
+- Range: `0.0..1.0`
+- Typical default: `1.0`
+- Meaning: exponential decay factor for path-based cumulative scores.
+- Impact:
+  - `1.0`: all moves in the path have equal weight (standard cumulative).
+  - `<1.0`: older moves lose influence exponentially. For example, `0.9` means the move at depth `d-1` has 90% the weight of the move at depth `d`.
+  - Use values like `0.8` to `0.95` to make the engine more focused on immediate tactical outcomes while still considering long-term path quality.
+
+### downstack_weight
+
+- Type: `number`
+- Typical default: `0.20`
+- Meaning: global weight for the downstack component (height reduction).
+
+### downstack_avg_height_weight
+
+- Type: `number`
+- Typical default: `0.0`
+- Meaning: weight for the average height of all columns within the downstack component.
+
+### downstack_min_height_weight
+
+- Type: `number`
+- Typical default: `-5.0`
+- Meaning: weight for the minimum height of all columns within the downstack component.
+
+### pc_mode
+
+- Type: `boolean`
+- Typical default: `false`
+- Meaning: enable specialized Perfect Clear search mode.
+
 ### quiescence_max_extensions
 
 - Type: `number`

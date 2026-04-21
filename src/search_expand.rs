@@ -137,6 +137,27 @@ pub(crate) fn gen_and_eval_root(
             combo_context + coaching_context_bias(state.coaching, coaching),
         );
 
+        let height_decrease = (state.board.height() as f32 - result_board.height() as f32).max(0.0);
+        
+        // Lowest part of the stack = min(highest occupied row across all columns)
+        let mut col_h = [0usize; 10];
+        let mut total_blocks = 0u32;
+        for x in 0..10 {
+            let col_bits = result_board.cols[x];
+            col_h[x] = if col_bits == 0 { 0 } else { (64 - col_bits.leading_zeros()) as usize };
+            total_blocks += col_bits.count_ones();
+        }
+        let min_h = col_h.iter().copied().min().unwrap_or(0);
+        let avg_h = col_h.iter().sum::<usize>() as f32 / 10.0;
+        let max_h = result_board.height();
+
+        // Prioritize paths that reach lower absolute max height, lower absolute min height, and have fewer blocks
+        let downstack_val = height_decrease * 10.0 
+            + (40.0 - max_h as f32) * 2.0 
+            + avg_h * ctx.config.downstack_avg_height_weight 
+            + min_h as f32 * ctx.config.downstack_min_height_weight 
+            + (400.0 - total_blocks as f32) * 0.1;
+
         let spin_structural_bonus = if m.is_full() {
             ctx.weights.spin_full
         } else if m.is_mini() {
@@ -150,6 +171,7 @@ pub(crate) fn gen_and_eval_root(
             attack_val,
             chain_val,
             next_b2b as f32,
+            downstack_val,
             context_mod,
             ctx.config,
         ) - b2b_break_penalty;
@@ -169,9 +191,11 @@ pub(crate) fn gen_and_eval_root(
             attack_score: attack_val,
             chain_score: chain_val,
             b2b_score: next_b2b as f32,
+            downstack_score: downstack_val,
             context_score: context_mod,
             path_attack: attack_val,
             path_chain: chain_val,
+            path_downstack: downstack_val,
             path_context: context_mod,
             path_clear_events,
         });
@@ -273,6 +297,23 @@ pub(crate) fn expand_node(
             combo_context + coaching_context_bias(parent.coaching, coaching),
         );
 
+        let height_decrease = (parent.board.height() as f32 - result_board.height() as f32).max(0.0);
+        let mut col_h = [0usize; 10];
+        let mut total_blocks = 0u32;
+        for x in 0..10 {
+            let col_bits = result_board.cols[x];
+            col_h[x] = if col_bits == 0 { 0 } else { (64 - col_bits.leading_zeros()) as usize };
+            total_blocks += col_bits.count_ones();
+        }
+        let min_h = col_h.iter().copied().min().unwrap_or(0);
+        let avg_h = col_h.iter().sum::<usize>() as f32 / 10.0;
+        let max_h = result_board.height();
+        let downstack_val = height_decrease * 10.0 
+            + (40.0 - max_h as f32) * 2.0 
+            + avg_h * ctx.config.downstack_avg_height_weight 
+            + min_h as f32 * ctx.config.downstack_min_height_weight 
+            + (400.0 - total_blocks as f32) * 0.1;
+
         let spin_structural_bonus = if m.is_full() {
             ctx.weights.spin_full
         } else if m.is_mini() {
@@ -281,8 +322,11 @@ pub(crate) fn expand_node(
             0.0
         };
 
-        let cum_attack = parent.path_attack + attack_val;
-        let cum_chain = parent.path_chain + chain_val;
+        let decay = ctx.config.path_decay;
+        let cum_attack = parent.path_attack * decay + attack_val;
+        let cum_chain = parent.path_chain * decay + chain_val;
+        let cum_downstack = parent.path_downstack * decay + downstack_val;
+
         let depth_factor = (parent.path.len() as f32 + 1.0)
             .sqrt()
             .min(ctx.config.max_depth_factor);
@@ -291,6 +335,7 @@ pub(crate) fn expand_node(
             cum_attack / depth_factor,
             cum_chain / depth_factor,
             next_b2b as f32,
+            cum_downstack / depth_factor,
             context_mod,
             ctx.config,
         ) - b2b_break_penalty;
@@ -313,10 +358,12 @@ pub(crate) fn expand_node(
             attack_score: attack_val,
             chain_score: chain_val,
             b2b_score: next_b2b as f32,
+            downstack_score: downstack_val,
             context_score: context_mod,
-            path_attack: parent.path_attack + attack_val,
-            path_chain: parent.path_chain + chain_val,
-            path_context: parent.path_context + context_mod,
+            path_attack: cum_attack,
+            path_chain: cum_chain,
+            path_downstack: cum_downstack,
+            path_context: parent.path_context * decay + context_mod,
             path_clear_events,
         });
     }

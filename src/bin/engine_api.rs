@@ -49,6 +49,8 @@ struct SearchOverrides {
     attack_weight: Option<f32>,
     chain_weight: Option<f32>,
     b2b_weight: Option<f32>,
+    downstack_weight: Option<f32>,
+    pc_mode: Option<bool>,
     spin_full_weight: Option<f32>,
     spin_mini_weight: Option<f32>,
     context_weight: Option<f32>,
@@ -218,29 +220,38 @@ async fn find_best_move_handler(
     let config = apply_search_overrides(req.search.as_ref());
     let weights = apply_eval_overrides(req.search.as_ref());
 
-    let full = find_best_move_with_scores(&game_state, &config, &weights).ok_or_else(|| {
-        Json(ErrorResponse {
-            error: "no legal move found".to_string(),
-        })
-    })?;
-
-    let best = &full.best;
-    let include_candidates = req.include_candidates.unwrap_or(false);
-    let candidates = if include_candidates {
-        let temperature = req.candidate_temperature.unwrap_or(1.0).max(0.001);
-        let limit = req
-            .candidate_limit
-            .unwrap_or(8)
-            .max(1)
-            .min(full.root_scores.len().max(1));
-        Some(root_scores_to_candidates(
-            &full.root_scores,
-            temperature,
-            limit,
-            &game_state.board,
-        ))
+    let (best, candidates) = if config.pc_mode {
+        let sr = direct_cobra_copy::search::find_best_move(&game_state, &config, &weights).ok_or_else(|| {
+            Json(ErrorResponse {
+                error: "no PC solution found".to_string(),
+            })
+        })?;
+        (sr, None)
     } else {
-        None
+        let full = find_best_move_with_scores(&game_state, &config, &weights).ok_or_else(|| {
+            Json(ErrorResponse {
+                error: "no legal move found".to_string(),
+            })
+        })?;
+        
+        let include_candidates = req.include_candidates.unwrap_or(false);
+        let candidates = if include_candidates {
+            let temperature = req.candidate_temperature.unwrap_or(1.0).max(0.001);
+            let limit = req
+                .candidate_limit
+                .unwrap_or(8)
+                .max(1)
+                .min(full.root_scores.len().max(1));
+            Some(root_scores_to_candidates(
+                &full.root_scores,
+                temperature,
+                limit,
+                &game_state.board,
+            ))
+        } else {
+            None
+        };
+        (full.best, candidates)
     };
 
     let normalized_best = normalize_root_move_for_reachability(&game_state.board, best.best_move);
@@ -497,6 +508,12 @@ fn apply_search_overrides(overrides: Option<&SearchOverrides>) -> SearchConfig {
         }
         if let Some(x) = v.b2b_weight {
             out.b2b_weight = x;
+        }
+        if let Some(x) = v.downstack_weight {
+            out.downstack_weight = x;
+        }
+        if let Some(x) = v.pc_mode {
+            out.pc_mode = x;
         }
         if let Some(x) = v.context_weight {
             out.context_weight = x;

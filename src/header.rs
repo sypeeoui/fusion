@@ -320,7 +320,15 @@ pub fn is_ok_move(m: &Move) -> bool {
 pub const fn make_piece(p: Piece) -> PieceCoordinates {
     use Coordinates as C;
     match p {
-        Piece::I => PieceCoordinates::new(C::new(-1, 0), C::new(1, 0), C::new(2, 0)),
+        // SRS 4x4 or 3x3 grid coordinates (x, y) where (0,0) is bottom-left
+        // But Fusion uses pivot-relative. 
+        // In zztetris pieces.js: 
+        // I North: [0, 1], [1, 1], [2, 1], [3, 1] -> relative to [1.5, 1.5]
+        // Let's use (x, y) relative to the SRS pivot.
+        // For J, L, S, Z, T (3x3): Pivot is (1, 1)
+        // For I (4x4): Pivot is (1.5, 1.5) -> we use (1, 1) as "base" and offset.
+        
+        Piece::I => PieceCoordinates::new(C::new(-1, 0), C::new(1, 0), C::new(2, 0)), 
         Piece::O => PieceCoordinates::new(C::new(1, 0), C::new(0, 1), C::new(1, 1)),
         Piece::T => PieceCoordinates::new(C::new(-1, 0), C::new(1, 0), C::new(0, 1)),
         Piece::S => PieceCoordinates::new(C::new(-1, 0), C::new(0, 1), C::new(1, 1)),
@@ -330,21 +338,22 @@ pub const fn make_piece(p: Piece) -> PieceCoordinates {
     }
 }
 
-pub const fn rotate_coord(r: Rotation, c: Coordinates) -> Coordinates {
+pub const fn rotate_coord(p: Piece, r: Rotation, c: Coordinates) -> Coordinates {
+    // Match frontend's rotateCoordForEngine (simple coordinate rotation around pivot)
     match r {
+        Rotation::North => c,
         Rotation::East => Coordinates::new(c.y as i32, -(c.x as i32)),
         Rotation::South => Coordinates::new(-(c.x as i32), -(c.y as i32)),
         Rotation::West => Coordinates::new(-(c.y as i32), c.x as i32),
-        Rotation::North => c,
     }
 }
 
 pub const fn piece_table(p: Piece, r: Rotation) -> PieceCoordinates {
     let cells = make_piece(p);
     PieceCoordinates::new(
-        rotate_coord(r, cells.coords[0]),
-        rotate_coord(r, cells.coords[1]),
-        rotate_coord(r, cells.coords[2]),
+        rotate_coord(p, r, cells.coords[0]),
+        rotate_coord(p, r, cells.coords[1]),
+        rotate_coord(p, r, cells.coords[2]),
     )
 }
 

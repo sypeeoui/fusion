@@ -227,10 +227,14 @@ pub fn evaluate_position_wasm(
             board_score,
             attack_score,
             chain_score,
+            b2b_score,
+            downstack_score,
             context_score,
             actual_search_score_opt,
             path_attack,
             path_chain,
+            path_b2b,
+            path_downstack,
             path_context,
             recommended_path,
             best_path_attack_summary,
@@ -333,10 +337,14 @@ pub fn evaluate_position_wasm(
                     full.board_score,
                     full.attack_score,
                     full.chain_score,
+                    full.b2b_score,
+                    full.downstack_score,
                     full.context_score,
                     actual_search_score,
                     full.path_attack,
                     full.path_chain,
+                    full.path_b2b,
+                    full.path_downstack,
                     full.path_context,
                     recommended_path,
                     build_path_attack_summary(&full.best.pv_clear_events),
@@ -399,9 +407,13 @@ pub fn evaluate_position_wasm(
             board_score,
             attack_score,
             chain_score,
+            b2b_score,
+            downstack_score,
             context_score,
             path_attack,
             path_chain,
+            path_b2b,
+            path_downstack,
             path_context,
             insight_tags,
             recommended_path,
@@ -443,6 +455,24 @@ fn apply_search_overrides_wasm(config: &mut SearchConfig, overrides: Option<&Sea
         }
         if let Some(x) = v.b2b_weight {
             config.b2b_weight = x;
+        }
+        if let Some(x) = v.downstack_weight {
+            config.downstack_weight = x;
+        }
+        if let Some(x) = v.downstack_avg_height_weight {
+            config.downstack_avg_height_weight = x;
+        }
+        if let Some(x) = v.downstack_min_height_weight {
+            config.downstack_min_height_weight = x;
+        }
+        if let Some(x) = v.pc_mode {
+            config.pc_mode = x;
+        }
+        if let Some(x) = v.debug_pc {
+            config.debug_pc = x;
+        }
+        if let Some(x) = v.path_decay {
+            config.path_decay = x;
         }
         if let Some(x) = v.context_weight {
             config.context_weight = x;

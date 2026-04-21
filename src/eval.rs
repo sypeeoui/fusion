@@ -287,7 +287,7 @@ fn count_spins(board: &Board, heights: &[usize; COL_NB]) -> (u32, u32) {
     // Structural spin detection (T-slots, S/Z/L/J/I immobile patterns)
     // This rewards the EXISTENCE of a spin-ready shape on the board
     let mut full = 0;
-    let mut mini = 0;
+    let mini = 0;
 
     // Detect T-slots (TSD/TST setups)
     full += count_tsd_overhangs(board, heights) as u32;

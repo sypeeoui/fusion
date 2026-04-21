@@ -244,13 +244,18 @@ pub fn assemble_composite(
     attack: f32,
     chain: f32,
     b2b: f32,
+    downstack: f32,
     context: f32,
     config: &SearchConfig,
 ) -> f32 {
+    // Reward b2b increase: use log2(b2b + 1) to incentivize growth with diminishing returns
+    let b2b_val = (b2b + 1.0).log2();
+
     board * config.board_weight
         + attack * config.attack_weight
         + chain * config.chain_weight
-        + b2b * config.b2b_weight
+        + b2b_val * config.b2b_weight
+        + downstack * config.downstack_weight
         + context * config.context_weight
 }
 
@@ -885,14 +890,20 @@ mod tests {
         let attack = 3.0;
         let chain = 4.0;
         let b2b = 5.0;
+        let downstack = 1.5;
         let context = -1.0;
-        let composite = assemble_composite(board, attack, chain, b2b, context, &config);
+        let composite = assemble_composite(board, attack, chain, b2b, downstack, context, &config);
         let expected = board * config.board_weight
             + attack * config.attack_weight
             + chain * config.chain_weight
-            + b2b * config.b2b_weight
+            + b2b_val(b2b) * config.b2b_weight
+            + downstack * config.downstack_weight
             + context * config.context_weight;
         assert_eq!(composite, expected);
+    }
+
+    fn b2b_val(b2b: f32) -> f32 {
+        (b2b + 1.0).log2()
     }
 
     #[test]

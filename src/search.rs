@@ -7,6 +7,7 @@ use crate::eval::EvalWeights;
 
 use crate::state::GameState;
 use crate::transposition::{get_zobrist_keys, TranspositionTable, DEFAULT_TT_SIZE};
+use smallvec::SmallVec;
 #[cfg(not(target_arch = "wasm32"))]
 use std::time::{Duration, Instant};
 
@@ -21,7 +22,11 @@ pub fn find_best_move(
     config: &SearchConfig,
     weights: &EvalWeights,
 ) -> Option<SearchResult> {
-    find_best_move_with_scores(state, config, weights).map(|full| full.best)
+    if config.pc_mode {
+        find_best_move_pc(state, config, weights)
+    } else {
+        find_best_move_with_scores(state, config, weights).map(|full| full.best)
+    }
 }
 
 pub fn find_best_move_with_scores(
@@ -317,10 +322,12 @@ fn run_beam_search_iteration(params: &mut SearchIterationParams<'_>) -> Option<S
         attack_score: best.attack_score,
         chain_score: best.chain_score,
         b2b_score: best.b2b_score,
+        downstack_score: best.downstack_score,
         context_score: best.context_score,
         path_attack: best.path_attack,
         path_chain: best.path_chain,
         path_b2b: best.b2b_score,
+        path_downstack: best.path_downstack,
         path_context: best.path_context,
     })
 }
@@ -522,9 +529,11 @@ mod tests {
             attack_score: 0.0,
             chain_score: 0.0,
             b2b_score: 0.0,
+            downstack_score: 0.0,
             context_score: 0.0,
             path_attack: 0.0,
             path_chain: 0.0,
+            path_downstack: 0.0,
             path_context: 0.0,
             path_clear_events: SmallVec::new(),
         }
@@ -747,9 +756,11 @@ mod tests {
                 attack_score: 0.0,
                 chain_score: 0.0,
                 b2b_score: 0.0,
+                downstack_score: 0.0,
                 context_score: 0.0,
                 path_attack: 0.0,
                 path_chain: 0.0,
+                path_downstack: 0.0,
                 path_context: 0.0,
                 path_clear_events: SmallVec::new(),
             },
@@ -768,9 +779,11 @@ mod tests {
                 attack_score: 0.0,
                 chain_score: 0.0,
                 b2b_score: 0.0,
+                downstack_score: 0.0,
                 context_score: 0.0,
                 path_attack: 0.0,
                 path_chain: 0.0,
+                path_downstack: 0.0,
                 path_context: 0.0,
                 path_clear_events: SmallVec::new(),
             },
@@ -789,9 +802,11 @@ mod tests {
                 attack_score: 0.0,
                 chain_score: 0.0,
                 b2b_score: 0.0,
+                downstack_score: 0.0,
                 context_score: 0.0,
                 path_attack: 0.0,
                 path_chain: 0.0,
+                path_downstack: 0.0,
                 path_context: 0.0,
                 path_clear_events: SmallVec::new(),
             },
@@ -958,4 +973,207 @@ mod tests {
             full.position_complexity
         );
     }
+}
+
+#[cfg(target_arch = "wasm32")]
+macro_rules! pc_log {
+    ($enabled:expr, $($arg:tt)*) => {
+        if $enabled {
+            web_sys::console::log_1(&format!($($arg)*).into());
+        }
+    };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+macro_rules! pc_log {
+    ($enabled:expr, $($arg:tt)*) => {
+        if $enabled {
+            println!($($arg)*);
+        }
+    };
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+fn get_now_ms() -> u64 {
+    use std::sync::OnceLock;
+    static START: OnceLock<Instant> = OnceLock::new();
+    START.get_or_init(Instant::now).elapsed().as_millis() as u64
+}
+
+#[cfg(target_arch = "wasm32")]
+fn get_now_ms() -> u64 {
+    web_sys::window()
+        .and_then(|w| w.performance())
+        .map(|p| p.now() as u64)
+        .unwrap_or(0)
+}
+
+pub fn find_best_move_pc(
+    state: &GameState,
+    config: &SearchConfig,
+    _weights: &EvalWeights,
+) -> Option<SearchResult> {
+    let search_queue = if config.extend_queue_7bag {
+        bag::extend_queue(&state.queue, state.current, state.hold)
+    } else {
+        state.queue.clone()
+    };
+
+    let max_depth = config.depth; // Use full requested depth
+    let zobrist_keys = get_zobrist_keys();
+    let mut pc_tt = std::collections::HashSet::with_capacity(1000);
+
+    let start_time = get_now_ms();
+
+    let mut path = Vec::new();
+    let time_limit = config.time_budget_ms.unwrap_or(1000); // Default to 1s
+    if find_pc_path(
+        &state.board,
+        state.current,
+        state.hold,
+        &search_queue,
+        0,
+        max_depth,
+        &zobrist_keys,
+        &mut pc_tt,
+        &mut path,
+        start_time,
+        Some(time_limit),
+        config.debug_pc,
+    ) {
+        let best_move = path[0];
+        let hold_used = best_move.piece() != state.current;
+
+        return Some(SearchResult {
+            best_move,
+            hold_used,
+            score: 1000.0,
+            pv: path,
+            coaching_state: state.coaching,
+            pv_clear_events: Vec::new(),
+        });
+    }
+
+    None
+}
+
+fn find_pc_path(
+    board: &crate::board::Board,
+    current: crate::header::Piece,
+    hold: Option<crate::header::Piece>,
+    queue: &[crate::header::Piece],
+    q_idx: usize, // Index of the piece that will be served NEXT from the queue
+    max_depth: usize, // pieces to place
+    zobrist_keys: &crate::transposition::ZobristKeys,
+    tt: &mut std::collections::HashSet<u64>,
+    path: &mut Vec<crate::header::Move>,
+    start_time: u64,
+    time_budget: Option<u64>,
+    debug_enabled: bool,
+) -> bool {
+    if board.is_empty() {
+        pc_log!(debug_enabled, "FOUND PC solution at depth {}!", path.len());
+        return true;
+    }
+    if path.len() >= max_depth {
+        return false;
+    }
+    if board.height() > 6 {
+        return false;
+    }
+
+    // Timeout check
+    if let Some(budget) = time_budget {
+        if get_now_ms() - start_time > budget {
+            pc_log!(debug_enabled, "PC search timed out at depth {}", path.len());
+            return false;
+        }
+    }
+
+    let hash = zobrist_keys.hash_board(board);
+    // State hash MUST include current piece and hold piece
+    let state_hash = hash 
+        ^ (path.len() as u64) 
+        ^ (hold.map(|p| p as u64 + 1).unwrap_or(0) << 32)
+        ^ ((current as u64 + 1) << 40);
+
+    if !tt.insert(state_hash) {
+        return false;
+    }
+
+    let mut moves = crate::move_buffer::MoveBuffer::new();
+    
+    // 1. Try current piece
+    crate::movegen::generate(board, &mut moves, current, true);
+    pc_log!(debug_enabled, "Depth {}: Trying current piece {:?} ({} moves)", path.len(), current, moves.len());
+    for m in moves.as_slice() {
+        if !board.legal_lock_placement(m) {
+            continue;
+        }
+        let mut next_board = board.clone();
+        next_board.do_move(m);
+        if next_board.height() > 6 {
+            continue;
+        }
+
+        path.push(*m);
+        let next_piece = if q_idx < queue.len() { queue[q_idx] } else { crate::header::Piece::I };
+        if find_pc_path(&next_board, next_piece, hold, queue, q_idx + 1, max_depth, zobrist_keys, tt, path, start_time, time_budget, debug_enabled) {
+            return true;
+        }
+        path.pop();
+    }
+
+    // 2. Try hold piece
+    if let Some(held) = hold {
+        if held != current {
+            moves = crate::move_buffer::MoveBuffer::new();
+            crate::movegen::generate(board, &mut moves, held, true);
+            pc_log!(debug_enabled, "Depth {}: Trying hold piece {:?} ({} moves)", path.len(), held, moves.len());
+            for m in moves.as_slice() {
+                if !board.legal_lock_placement(m) {
+                    continue;
+                }
+                let mut next_board = board.clone();
+                next_board.do_move(m);
+                if next_board.height() > 6 {
+                    continue;
+                }
+
+                path.push(*m);
+                let next_piece = if q_idx < queue.len() { queue[q_idx] } else { crate::header::Piece::I };
+                if find_pc_path(&next_board, next_piece, Some(current), queue, q_idx + 1, max_depth, zobrist_keys, tt, path, start_time, time_budget, debug_enabled) {
+                    return true;
+                }
+                path.pop();
+            }
+        }
+    } else if q_idx < queue.len() {
+        // Initial hold: use next piece from queue, current piece goes to hold
+        let held_piece = queue[q_idx];
+        if held_piece != current {
+            moves = crate::move_buffer::MoveBuffer::new();
+            crate::movegen::generate(board, &mut moves, held_piece, true);
+            pc_log!(debug_enabled, "Depth {}: Initial hold, using queue[{}]: {:?} ({} moves)", path.len(), q_idx, held_piece, moves.len());
+            for m in moves.as_slice() {
+                if !board.legal_lock_placement(m) {
+                    continue;
+                }
+                let mut next_board = board.clone();
+                next_board.do_move(m);
+                if next_board.height() > 6 {
+                    continue;
+                }
+
+                path.push(*m);
+                let next_piece = if q_idx + 1 < queue.len() { queue[q_idx + 1] } else { crate::header::Piece::I };
+                if find_pc_path(&next_board, next_piece, Some(current), queue, q_idx + 2, max_depth, zobrist_keys, tt, path, start_time, time_budget, debug_enabled) {
+                    return true;
+                }
+                path.pop();
+            }
+        }
+    }
+
+    false
 }
