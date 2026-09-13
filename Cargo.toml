@@ -1,5 +1,5 @@
 [package]
-name = "direct-cobra-copy"
+name = "fusion-engine"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,62 +7,74 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [[bin]]
-name = "perft_cli"
-path = "src/bin/perft_cli.rs"
-required-features = ["native"]
+name = "bench_beam"
+path = "src/bin/bench_beam.rs"
 
 [[bin]]
-name = "profile_perft"
-path = "src/bin/profile_perft.rs"
-required-features = ["native"]
+name = "perft_cli"
+path = "src/bin/perft_cli.rs"
 
 [[bin]]
 name = "bench_perft"
 path = "src/bin/bench_perft.rs"
-required-features = ["native"]
 
 [[bin]]
-name = "calibrate_skill_buckets"
-path = "src/bin/calibrate_skill_buckets.rs"
-required-features = ["native"]
+name = "generate_policy_value_labels"
+path = "src/bin/generate_policy_value_labels.rs"
 
 [[bin]]
-name = "replay_validation_gate"
-path = "src/bin/replay_validation_gate.rs"
-required-features = ["native"]
+name = "policy_value_runtime_parity_fixture"
+path = "src/bin/policy_value_runtime_parity_fixture.rs"
 
 [[bin]]
-name = "engine_api"
-path = "src/bin/engine_api.rs"
-required-features = ["native"]
+name = "bench_smear"
+path = "src/bin/bench_smear.rs"
+
+[[bin]]
+name = "bot_arena"
+path = "src/bin/bot_arena.rs"
 
 [features]
-default = ["native", "rayon"]
+default = ["rayon"]
 rayon = ["dep:rayon"]
-native = ["dep:axum", "dep:tokio", "dep:tower-http"]
-wasm = ["dep:wasm-bindgen", "dep:serde_json", "dep:js-sys", "dep:console_error_panic_hook", "dep:web-sys"]
+wasm = ["dep:wasm-bindgen", "dep:js-sys", "dep:console_error_panic_hook", "dep:web-sys"]
 
 [dependencies]
 rayon = { version = "1.10", optional = true }
 smallvec = "1.13"
 wasm-bindgen = { version = "=0.2.100", optional = true }
 serde = { version = "1", features = ["derive"] }
-serde_json = { version = "1", optional = true }
+serde_json = { version = "1" }
+sha2 = "0.10"
 js-sys = { version = "0.3", optional = true }
 console_error_panic_hook = { version = "0.1", optional = true }
 web-sys = { version = "0.3", features = ["console", "Window", "Performance"], optional = true }
 
-# Native-only dependencies
-axum = { version = "0.7", optional = true }
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "net"], optional = true }
-tower-http = { version = "0.6", features = ["cors"], optional = true }
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+tract-onnx = "0.21"
 
 [package.metadata.wasm-pack.profile.release]
-wasm-opt = false
+wasm-opt = ['-O3', '-all']
+
+# Tests are dominated by seeded differential corpora (bit-twiddling loops
+# 10-30x slower unoptimized). opt-level 2 keeps debug_assert! (the parity
+# arbiters rely on it) while making the corpus tests run in seconds.
+[profile.test]
+opt-level = 2
 
 [profile.release]
 opt-level = 3
 lto = true
 codegen-units = 1
-panic = "abort"
+# Unwind (not abort) so the WASM coaching entrypoints' std::panic::catch_unwind
+# guards actually catch a panic and return JsValue::NULL instead of trapping the
+# whole instance. An aborted panic poisons the instance and the next JsBoard.free()
+# throws "attempted to take ownership of Rust value while it was borrowed".
+panic = "unwind"
 strip = "symbols"
+
+# Native bench profile on equal footing with the C++ reference's -fno-exceptions;
+# never used for wasm artifacts, which require unwind (see above).
+[profile.bench-native]
+inherits = "release"
+panic = "abort"

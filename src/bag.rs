@@ -1,5 +1,12 @@
+//! 7-bag piece queue prediction for TETR.IO.
+//!
+//! TETR.IO uses a 7-bag randomizer: all 7 pieces (I, O, T, L, J, S, Z) appear
+//! exactly once per bag in random order. By tracking which pieces have been
+//! consumed, we can deduce what remains and predict upcoming pieces.
+
 use crate::header::{Piece, ALL_PIECES, PIECE_NB};
 
+/// Tracks consumption within the current 7-bag.
 #[derive(Debug, Clone)]
 pub(crate) struct BagTracker {
     seen: [bool; PIECE_NB],
@@ -7,6 +14,7 @@ pub(crate) struct BagTracker {
 }
 
 impl BagTracker {
+    /// Create a new tracker with an empty bag (no pieces consumed).
     pub(crate) fn new() -> Self {
         Self {
             seen: [false; PIECE_NB],
@@ -14,12 +22,16 @@ impl BagTracker {
         }
     }
 
+    /// Mark a piece as consumed in the current bag.
+    ///
+    /// If the bag is complete (all 7 consumed), resets to a new bag and
+    /// marks the piece as the first of that new bag.
     pub(crate) fn consume(&mut self, piece: Piece) {
         if self.count >= 7 {
             self.reset();
         }
         let idx = piece as usize;
-        // If already seen, we've crossed a bag boundary — reset first.
+        // If already seen, we've crossed a bag boundary - reset first.
         if self.seen[idx] {
             self.reset();
         }
@@ -27,6 +39,7 @@ impl BagTracker {
         self.count += 1;
     }
 
+    /// Return pieces NOT yet consumed in the current bag.
     pub(crate) fn remaining(&self) -> Vec<Piece> {
         ALL_PIECES
             .iter()
@@ -35,6 +48,9 @@ impl BagTracker {
             .collect()
     }
 
+    /// Given a visible queue, consume all pieces and return the remaining
+    /// unseen pieces that must appear before the next bag starts.
+    // Future: needed for extended queue prediction
     #[allow(dead_code)]
     pub(crate) fn predict_next(&mut self, queue: &[Piece]) -> Vec<Piece> {
         for &piece in queue {
@@ -43,6 +59,8 @@ impl BagTracker {
         self.remaining()
     }
 
+    /// Number of pieces consumed in the current bag.
+    // Future: needed for extended queue prediction
     #[allow(dead_code)]
     pub(crate) fn count(&self) -> u8 {
         self.count
@@ -60,6 +78,14 @@ impl Default for BagTracker {
     }
 }
 
+/// Extend the visible queue with predicted pieces from the 7-bag system.
+///
+/// Takes the known queue, current piece, and optional hold piece. Tracks
+/// bag state across all known pieces and appends predicted pieces if the
+/// prediction is confident enough (≤2 pieces remain in the bag).
+///
+/// Returns a new vector containing the original queue plus any predicted
+/// pieces appended at the end.
 pub(crate) fn extend_queue(queue: &[Piece], current: Piece, hold: Option<Piece>) -> Vec<Piece> {
     let mut tracker = BagTracker::new();
 
@@ -76,7 +102,7 @@ pub(crate) fn extend_queue(queue: &[Piece], current: Piece, hold: Option<Piece>)
     let remaining = tracker.remaining();
     let mut extended = queue.to_vec();
 
-    // Only predict when ≤2 pieces remain — those are guaranteed to appear
+    // Only predict when ≤2 pieces remain - those are guaranteed to appear
     // before the next bag, though their order is unknown.
     if remaining.len() <= 2 && !remaining.is_empty() {
         extended.extend_from_slice(&remaining);
@@ -95,7 +121,7 @@ mod tests {
         let tracker = BagTracker::new();
         let remaining = tracker.remaining();
         assert_eq!(remaining.len(), 7);
-        assert_eq!(remaining, vec![I, O, T, S, Z, J, L]);
+        assert_eq!(remaining, vec![I, O, T, L, J, S, Z]);
     }
 
     #[test]
@@ -111,9 +137,9 @@ mod tests {
         assert!(!remaining.contains(&T));
         assert!(!remaining.contains(&S));
         assert!(remaining.contains(&O));
-        assert!(remaining.contains(&Z));
-        assert!(remaining.contains(&J));
         assert!(remaining.contains(&L));
+        assert!(remaining.contains(&J));
+        assert!(remaining.contains(&Z));
     }
 
     #[test]
@@ -139,12 +165,12 @@ mod tests {
         tracker.consume(I);
         tracker.consume(O);
         tracker.consume(T);
-        tracker.consume(S);
-        tracker.consume(Z);
+        tracker.consume(L);
+        tracker.consume(J);
 
         let remaining = tracker.remaining();
         assert_eq!(remaining.len(), 2);
-        assert_eq!(remaining, vec![J, L]);
+        assert_eq!(remaining, vec![S, Z]);
     }
 
     #[test]
@@ -153,10 +179,10 @@ mod tests {
         tracker.consume(I);
         tracker.consume(O);
 
-        let queue = vec![T, S, Z];
+        let queue = vec![T, L, J];
         let remaining = tracker.predict_next(&queue);
         assert_eq!(remaining.len(), 2);
-        assert_eq!(remaining, vec![J, L]);
+        assert_eq!(remaining, vec![S, Z]);
     }
 
     #[test]
@@ -176,22 +202,22 @@ mod tests {
 
     #[test]
     fn test_extend_queue_adds_predicted_pieces() {
-        // Setup: hold=I, current=O, queue=[T, S, Z]
-        // That's 5 pieces consumed from the bag, 2 remaining (J, L)
-        let queue = vec![T, S, Z];
+        // Setup: hold=I, current=O, queue=[T, L, J]
+        // That's 5 pieces consumed from the bag, 2 remaining (S, Z)
+        let queue = vec![T, L, J];
         let extended = extend_queue(&queue, O, Some(I));
 
-        // Original queue + predicted J, L
+        // Original queue + predicted S, Z
         assert_eq!(extended.len(), 5);
-        assert_eq!(&extended[..3], &[T, S, Z]);
-        assert!(extended[3..].contains(&J));
-        assert!(extended[3..].contains(&L));
+        assert_eq!(&extended[..3], &[T, L, J]);
+        assert!(extended[3..].contains(&S));
+        assert!(extended[3..].contains(&Z));
     }
 
     #[test]
     fn test_extend_queue_no_prediction_when_too_many_remain() {
         // hold=I, current=O, queue=[T]
-        // That's 3 pieces consumed, 4 remaining — too uncertain
+        // That's 3 pieces consumed, 4 remaining - too uncertain
         let queue = vec![T];
         let extended = extend_queue(&queue, O, Some(I));
 
@@ -201,50 +227,50 @@ mod tests {
 
     #[test]
     fn test_extend_queue_single_remaining() {
-        // hold=I, current=O, queue=[T, S, Z, J]
-        // That's 6 pieces consumed, 1 remaining (L) — guaranteed
-        let queue = vec![T, S, Z, J];
+        // hold=I, current=O, queue=[T, L, J, S]
+        // That's 6 pieces consumed, 1 remaining (Z) - guaranteed
+        let queue = vec![T, L, J, S];
         let extended = extend_queue(&queue, O, Some(I));
 
         assert_eq!(extended.len(), 5);
-        assert_eq!(&extended[..4], &[T, S, Z, J]);
-        assert_eq!(extended[4], L);
+        assert_eq!(&extended[..4], &[T, L, J, S]);
+        assert_eq!(extended[4], Z);
     }
 
     #[test]
     fn test_extend_queue_no_hold() {
-        // No hold, current=I, queue=[O, T, S, Z]
-        // That's 5 pieces consumed, 2 remaining (J, L)
-        let queue = vec![O, T, S, Z];
+        // No hold, current=I, queue=[O, T, L, J]
+        // That's 5 pieces consumed, 2 remaining (S, Z)
+        let queue = vec![O, T, L, J];
         let extended = extend_queue(&queue, I, None);
 
         assert_eq!(extended.len(), 6);
-        assert_eq!(&extended[..4], &[O, T, S, Z]);
-        assert!(extended[4..].contains(&J));
-        assert!(extended[4..].contains(&L));
+        assert_eq!(&extended[..4], &[O, T, L, J]);
+        assert!(extended[4..].contains(&S));
+        assert!(extended[4..].contains(&Z));
     }
 
     #[test]
     fn test_extend_queue_full_bag_no_prediction() {
-        // hold=I, current=O, queue=[T, S, Z, J, L]
-        // That's all 7 consumed — bag complete, nothing remaining
-        let queue = vec![T, S, Z, J, L];
+        // hold=I, current=O, queue=[T, L, J, S, Z]
+        // That's all 7 consumed - bag complete, nothing remaining
+        let queue = vec![T, L, J, S, Z];
         let extended = extend_queue(&queue, O, Some(I));
 
         // No prediction (0 remaining)
-        assert_eq!(extended, vec![T, S, Z, J, L]);
+        assert_eq!(extended, vec![T, L, J, S, Z]);
     }
 
     #[test]
     fn test_extend_queue_cross_bag_boundary() {
-        // hold=I, current=O, queue=[T, S, Z, J, L, I]
+        // hold=I, current=O, queue=[T, L, J, S, Z, I]
         // First 7 fill bag 1, then I starts bag 2 → 6 remaining in new bag
         // Too many to predict
-        let queue = vec![T, S, Z, J, L, I];
+        let queue = vec![T, L, J, S, Z, I];
         let extended = extend_queue(&queue, O, Some(I));
 
         // No prediction appended (6 remaining in new bag)
-        assert_eq!(extended, vec![T, S, Z, J, L, I]);
+        assert_eq!(extended, vec![T, L, J, S, Z, I]);
     }
 
     #[test]

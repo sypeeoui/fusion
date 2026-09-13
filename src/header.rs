@@ -1,4 +1,4 @@
-//! Core types — 1:1 port of header.hpp
+//! Core types - 1:1 port of header.hpp
 
 pub type Bitboard = u64;
 
@@ -29,6 +29,31 @@ impl Piece {
             6 => Piece::L,
             _ => panic!("invalid Piece discriminant"),
         }
+    }
+}
+
+pub fn piece_from_external(v: u8) -> Option<Piece> {
+    match v {
+        0 => Some(Piece::I),
+        1 => Some(Piece::O),
+        2 => Some(Piece::T),
+        3 => Some(Piece::S),
+        4 => Some(Piece::Z),
+        5 => Some(Piece::J),
+        6 => Some(Piece::L),
+        _ => None,
+    }
+}
+
+pub fn piece_to_external(p: Piece) -> u8 {
+    match p {
+        Piece::I => 0,
+        Piece::O => 1,
+        Piece::T => 2,
+        Piece::S => 3,
+        Piece::Z => 4,
+        Piece::J => 5,
+        Piece::L => 6,
     }
 }
 
@@ -182,7 +207,7 @@ impl Move {
         Self { data }
     }
 
-    /// C++ Move(TSPIN, r, x, y, fullspin) — for T-spin move emission
+    /// C++ Move(TSPIN, r, x, y, fullspin) - for T-spin move emission
     pub const fn new_tspin(r: Rotation, x: i32, y: i32, fullspin: bool) -> Self {
         let data = (y as u16 & 0x3F)
             | ((x as u16 & 0xF) << 6)
@@ -192,6 +217,8 @@ impl Move {
         Self { data }
     }
 
+    /// Allspin mini: stores actual piece (not TSPIN sentinel) + spin_bit=1.
+    /// spin() returns (0 + 1) = 1 = Mini.  piece() returns the real piece.
     pub const fn new_allspin_mini(p: Piece, r: Rotation, x: i32, y: i32) -> Self {
         let data = (y as u16 & 0x3F)
             | ((x as u16 & 0xF) << 6)
@@ -249,6 +276,10 @@ impl Move {
 
     pub const fn raw(self) -> u16 {
         self.data
+    }
+
+    pub const fn from_raw(data: u16) -> Self {
+        Self { data }
     }
 
     pub fn cells(self) -> PieceCoordinates {
@@ -315,7 +346,7 @@ pub fn is_ok_move(m: &Move) -> bool {
 }
 
 // -- piece_table --
-// C++ constexpr — build piece cells for given piece+rotation
+// C++ constexpr - build piece cells for given piece+rotation
 
 pub const fn make_piece(p: Piece) -> PieceCoordinates {
     use Coordinates as C;
@@ -348,13 +379,36 @@ pub const fn rotate_coord(p: Piece, r: Rotation, c: Coordinates) -> Coordinates 
     }
 }
 
-pub const fn piece_table(p: Piece, r: Rotation) -> PieceCoordinates {
+const fn piece_table_const(p: Piece, r: Rotation) -> PieceCoordinates {
     let cells = make_piece(p);
     PieceCoordinates::new(
         rotate_coord(p, r, cells.coords[0]),
         rotate_coord(p, r, cells.coords[1]),
         rotate_coord(p, r, cells.coords[2]),
     )
+}
+
+const fn build_piece_cells() -> [[PieceCoordinates; ROTATION_NB]; PIECE_NB] {
+    let zero = Coordinates { x: 0, y: 0 };
+    let mut table = [[PieceCoordinates { coords: [zero; 3] }; ROTATION_NB]; PIECE_NB];
+    let mut pi = 0;
+    while pi < PIECE_NB {
+        let mut ri = 0;
+        while ri < ROTATION_NB {
+            table[pi][ri] =
+                piece_table_const(Piece::from_u8(pi as u8), Rotation::from_u8(ri as u8));
+            ri += 1;
+        }
+        pi += 1;
+    }
+    table
+}
+
+static PIECE_CELLS: [[PieceCoordinates; ROTATION_NB]; PIECE_NB] = build_piece_cells();
+
+#[inline(always)]
+pub fn piece_table(p: Piece, r: Rotation) -> PieceCoordinates {
+    PIECE_CELLS[p as usize][r as usize]
 }
 
 // -- Bitboard operations --

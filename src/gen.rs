@@ -9,41 +9,74 @@ pub(crate) fn in_bounds(p: Piece, r: Rotation, x: i32) -> bool {
         return false;
     }
     let pc = piece_table(p, r);
-    // Columns check
-    if !is_ok_x(pc[0].x as i32 + x) || !is_ok_x(pc[1].x as i32 + x) || !is_ok_x(pc[2].x as i32 + x) {
-        return false;
-    }
-    // Rows check (must be at least 0 to not be obstructed by floor immediately if we are at y=0)
-    // Actually pieces can be above spawn_row, but never below 0.
-    // Piece at y=0 is valid if all its minos have y >= 0.
-    if (pc[0].y as i32) < 0 || (pc[1].y as i32) < 0 || (pc[2].y as i32) < 0 {
-        // If piece at y=0 has any mino with relative y < 0, it's impossible to place at any y >= 0
-        // without that mino being at y < 0.
-        // Wait, no. If we are at y=2, and mino is at y=-2, it's at 0.
-        // But if piece at y=0 has mino at y=-1, it's out of bounds.
-        // in_bounds in Cobra usually only checks X.
-        // If a piece has a mino at relative y=-2, then the lowest legal y for that piece is y=2.
-    }
-    true
+    is_ok_x(pc[0].x as i32 + x) && is_ok_x(pc[1].x as i32 + x) && is_ok_x(pc[2].x as i32 + x)
 }
 
-pub(crate) const fn group2(_p: Piece) -> bool {
-    false
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) const fn group2(p: Piece) -> bool {
+    matches!(p, Piece::I | Piece::S | Piece::Z)
 }
 
 pub(crate) const fn canonical_size(p: Piece) -> usize {
     match p {
         Piece::O => 1,
-        _ => 4,
+        Piece::I | Piece::S | Piece::Z => 2,
+        _ => 4, // L, J, T
     }
 }
 
-pub(crate) fn canonical_r(_p: Piece, r: Rotation) -> Rotation {
-    r
+pub(crate) const fn canonical_r(p: Piece, r: Rotation) -> Rotation {
+    match p {
+        Piece::O => Rotation::North,
+        Piece::I | Piece::S | Piece::Z => {
+            // r & 1: North/South -> North(0), East/West -> East(1)
+            Rotation::from_u8((r as u8) & 1)
+        }
+        _ => r, // L, J, T
+    }
 }
 
-pub(crate) fn canonical_offset(_p: Piece, _r: Rotation) -> Coordinates {
-    Coordinates::new(0, 0)
+pub(crate) const fn canonical_offset(p: Piece, r: Rotation) -> Coordinates {
+    match p {
+        Piece::I => match r {
+            Rotation::South => Coordinates::new(1, 0),
+            Rotation::West => Coordinates::new(0, -1),
+            _ => Coordinates::new(0, 0),
+        },
+        Piece::S | Piece::Z => match r {
+            Rotation::South => Coordinates::new(0, 1),
+            Rotation::West => Coordinates::new(1, 0),
+            _ => Coordinates::new(0, 0),
+        },
+        _ => Coordinates::new(0, 0),
+    }
+}
+
+pub(crate) const fn rotation_spin_type(
+    is_t: bool,
+    is_allspin: bool,
+    has_three_corners: bool,
+    has_front_corners: bool,
+    is_immobile: bool,
+    kick_index: usize,
+) -> SpinType {
+    if is_t {
+        if has_three_corners {
+            if has_front_corners || kick_index >= 4 {
+                SpinType::Full
+            } else {
+                SpinType::Mini
+            }
+        } else if is_immobile {
+            SpinType::Mini
+        } else {
+            SpinType::NoSpin
+        }
+    } else if is_allspin && is_immobile {
+        SpinType::Mini
+    } else {
+        SpinType::NoSpin
+    }
 }
 
 // -- Direction --
@@ -57,7 +90,7 @@ pub(crate) enum Direction {
 
 pub(crate) const DIRECTION_NB: usize = 2; // Cw and Ccw only (Flip is separate)
 
-pub(crate) fn rotate(d: Direction, r: Rotation) -> Rotation {
+pub(crate) const fn rotate(d: Direction, r: Rotation) -> Rotation {
     let ri = r as u8;
     let result = match d {
         Direction::Cw => (ri + 1) & 3,
@@ -85,163 +118,217 @@ macro_rules! c {
     };
 }
 
-pub(crate) static KICKS: [[[Offsets5; ROTATION_NB]; DIRECTION_NB]; 3] = [
+pub(crate) const KICKS: [[[Offsets5; ROTATION_NB]; DIRECTION_NB]; 3] = [
     // [0] LJSZT
     [
-        // CW
+        // Cw
         [
-            [c!(0, 0), c!(-1, 0), c!(-1, 1), c!(0, -2), c!(-1, -2)], // 0->1 (N->E)
-            [c!(0, 0), c!(1, 0), c!(1, -1), c!(0, 2), c!(1, 2)],    // 1->2 (E->S)
-            [c!(0, 0), c!(1, 0), c!(1, 1), c!(0, -2), c!(1, -2)],   // 2->3 (S->W)
-            [c!(0, 0), c!(-1, 0), c!(-1, -1), c!(0, 2), c!(-1, 2)], // 3->0 (W->N)
+            [c!(0, 0), c!(-1, 0), c!(-1, 1), c!(0, -2), c!(-1, -2)],
+            [c!(0, 0), c!(1, 0), c!(1, -1), c!(0, 2), c!(1, 2)],
+            [c!(0, 0), c!(1, 0), c!(1, 1), c!(0, -2), c!(1, -2)],
+            [c!(0, 0), c!(-1, 0), c!(-1, -1), c!(0, 2), c!(-1, 2)],
         ],
         // CCW
         [
-            [c!(0, 0), c!(1, 0), c!(1, 1), c!(0, -2), c!(1, -2)],   // 0->3 (N->W)
-            [c!(0, 0), c!(1, 0), c!(1, -1), c!(0, 2), c!(1, 2)],    // 1->0 (E->N)
-            [c!(0, 0), c!(-1, 0), c!(-1, 1), c!(0, -2), c!(-1, -2)], // 2->1 (S->E)
-            [c!(0, 0), c!(-1, 0), c!(-1, -1), c!(0, 2), c!(-1, 2)], // 3->2 (W->S)
+            [c!(0, 0), c!(1, 0), c!(1, 1), c!(0, -2), c!(1, -2)],
+            [c!(0, 0), c!(1, 0), c!(1, -1), c!(0, 2), c!(1, 2)],
+            [c!(0, 0), c!(-1, 0), c!(-1, 1), c!(0, -2), c!(-1, -2)],
+            [c!(0, 0), c!(-1, 0), c!(-1, -1), c!(0, 2), c!(-1, 2)],
         ],
     ],
     // [1] I SRS
     [
         // CW
         [
-            [c!(0, 0), c!(-2, 0), c!(1, 0), c!(-2, -1), c!(1, 2)],  // 0->1
-            [c!(0, 0), c!(-1, 0), c!(2, 0), c!(-1, 2), c!(2, -1)],  // 1->2
-            [c!(0, 0), c!(2, 0), c!(-1, 0), c!(2, 1), c!(-1, -2)],  // 2->3
-            [c!(0, 0), c!(1, 0), c!(-2, 0), c!(1, -2), c!(-2, 1)],  // 3->0
+            [c!(1, 0), c!(-1, 0), c!(2, 0), c!(-1, -1), c!(2, 2)],
+            [c!(0, -1), c!(-1, -1), c!(2, -1), c!(-1, 1), c!(2, -2)],
+            [c!(-1, 0), c!(1, 0), c!(-2, 0), c!(1, 1), c!(-2, -2)],
+            [c!(0, 1), c!(1, 1), c!(-2, 1), c!(1, -1), c!(-2, 2)],
         ],
         // CCW
         [
-            [c!(0, 0), c!(-1, 0), c!(2, 0), c!(-1, 2), c!(2, -1)],  // 0->3
-            [c!(0, 0), c!(2, 0), c!(-1, 0), c!(2, 1), c!(-1, -2)],  // 1->0
-            [c!(0, 0), c!(1, 0), c!(-2, 0), c!(1, -2), c!(-2, 1)],  // 2->1
-            [c!(0, 0), c!(-2, 0), c!(1, 0), c!(-2, -1), c!(1, 2)],  // 3->2
+            [c!(0, -1), c!(-1, -1), c!(2, -1), c!(-1, 1), c!(2, -2)],
+            [c!(-1, 0), c!(1, 0), c!(-2, 0), c!(1, 1), c!(-2, -2)],
+            [c!(0, 1), c!(1, 1), c!(-2, 1), c!(1, -1), c!(-2, 2)],
+            [c!(1, 0), c!(-1, 0), c!(2, 0), c!(-1, -1), c!(2, 2)],
         ],
     ],
     // [2] I SRS+
     [
         // CW
         [
-            [c!(0, 0), c!(1, 0), c!(-2, 0), c!(-2, -1), c!(1, 2)],  // 0->1
-            [c!(0, 0), c!(-1, 0), c!(2, 0), c!(-1, -2), c!(2, 1)],  // 1->2
-            [c!(0, 0), c!(-1, 0), c!(2, 0), c!(-1, 2), c!(2, -1)],  // 2->3
-            [c!(0, 0), c!(2, 0), c!(-1, 0), c!(2, 1), c!(-1, -2)],  // 3->0
+            [c!(1, 0), c!(2, 0), c!(-1, 0), c!(-1, -1), c!(2, 2)],
+            [c!(0, -1), c!(-1, -1), c!(2, -1), c!(-1, 1), c!(2, -2)],
+            [c!(-1, 0), c!(1, 0), c!(-2, 0), c!(1, 1), c!(-2, -2)],
+            [c!(0, 1), c!(1, 1), c!(-2, 1), c!(1, -1), c!(-2, 2)],
         ],
         // CCW
         [
-            [c!(0, 0), c!(-1, 0), c!(2, 0), c!(2, -1), c!(-1, 2)],  // 0->3
-            [c!(0, 0), c!(-1, 0), c!(2, 0), c!(-1, -2), c!(2, 1)],  // 1->0
-            [c!(0, 0), c!(1, 0), c!(-2, 0), c!(-2, 1), c!(1, -2)],  // 2->1
-            [c!(0, 0), c!(1, 0), c!(-2, 0), c!(-2, -1), c!(1, 2)],  // 3->2
+            [c!(0, -1), c!(-1, -1), c!(2, -1), c!(2, -2), c!(-1, 1)],
+            [c!(-1, 0), c!(-2, 0), c!(1, 0), c!(-2, -2), c!(1, 1)],
+            [c!(0, 1), c!(-2, 1), c!(1, 1), c!(-2, 2), c!(1, -1)],
+            [c!(1, 0), c!(2, 0), c!(-1, 0), c!(2, 2), c!(-1, -1)],
         ],
     ],
 ];
 
-pub(crate) static KICKS_180: [[Offsets6; ROTATION_NB]; 2] = [
+pub(crate) const KICKS_180: [[Offsets6; ROTATION_NB]; 2] = [
     // [0] LJSZT
     [
-        [c!(0, 0), c!(0, 1), c!(1, 1), c!(-1, 1), c!(1, 0), c!(-1, 0)], // 0->2
-        [c!(0, 0), c!(1, 0), c!(1, 2), c!(1, 1), c!(0, 2), c!(0, 1)],  // 1->3
-        [c!(0, 0), c!(0, -1), c!(-1, -1), c!(1, -1), c!(-1, 0), c!(1, 0)], // 2->0
-        [c!(0, 0), c!(-1, 0), c!(-1, 2), c!(-1, 1), c!(0, 2), c!(0, 1)], // 3->1
+        [c!(0, 0), c!(0, 1), c!(1, 1), c!(-1, 1), c!(1, 0), c!(-1, 0)],
+        [c!(0, 0), c!(1, 0), c!(1, 2), c!(1, 1), c!(0, 2), c!(0, 1)],
+        [
+            c!(0, 0),
+            c!(0, -1),
+            c!(-1, -1),
+            c!(1, -1),
+            c!(-1, 0),
+            c!(1, 0),
+        ],
+        [
+            c!(0, 0),
+            c!(-1, 0),
+            c!(-1, 2),
+            c!(-1, 1),
+            c!(0, 2),
+            c!(0, 1),
+        ],
     ],
     // [1] I
     [
-        [c!(0, 0), c!(0, 1), c!(0, 0), c!(0, 0), c!(0, 0), c!(0, 0)], // 0->2
-        [c!(0, 0), c!(1, 0), c!(0, 0), c!(0, 0), c!(0, 0), c!(0, 0)], // 1->3
-        [c!(0, 0), c!(0, -1), c!(0, 0), c!(0, 0), c!(0, 0), c!(0, 0)], // 2->0
-        [c!(0, 0), c!(-1, 0), c!(0, 0), c!(0, 0), c!(0, 0), c!(0, 0)], // 3->1
+        [
+            c!(1, -1),
+            c!(1, 0),
+            c!(2, 0),
+            c!(0, 0),
+            c!(2, -1),
+            c!(0, -1),
+        ],
+        [
+            c!(-1, -1),
+            c!(0, -1),
+            c!(0, 1),
+            c!(0, 0),
+            c!(-1, 1),
+            c!(-1, 0),
+        ],
+        [
+            c!(-1, 1),
+            c!(-1, 0),
+            c!(-2, 0),
+            c!(0, 0),
+            c!(-2, 1),
+            c!(0, 1),
+        ],
+        [c!(1, 1), c!(0, 1), c!(0, 3), c!(0, 2), c!(1, 3), c!(1, 2)],
     ],
 ];
 
 // kick table index: srs_plus uses (p==I)*2, srs uses (p==I)
-pub(crate) fn kick_index(p: Piece, srs_plus: bool) -> usize {
-    let is_i = (p == Piece::I) as usize;
-    if srs_plus && is_i == 1 {
-        2
+pub(crate) const fn kick_index(p: Piece, srs_plus: bool) -> usize {
+    let is_i = matches!(p, Piece::I) as usize;
+    if srs_plus {
+        is_i * 2
     } else {
         is_i
     }
 }
 
-pub(crate) fn kick_180_index(p: Piece) -> usize {
-    (p == Piece::I) as usize
+pub(crate) const fn kick_180_index(p: Piece) -> usize {
+    matches!(p, Piece::I) as usize
 }
 
 // -- CollisionMap --
-
-pub struct CollisionMap {
-    pub(crate) data: [[Bitboard; ROTATION_NB]; COL_NB],
+// C++ CollisionMap<p>: board[COL_NB][canonicalSize] of Bitboard
+// Each entry is OR of column bitboards shifted by piece cell offsets
+pub(crate) struct CollisionMap {
+    pub(crate) board: [[Bitboard; 4]; COL_NB], // max 4 canonical rotations
 }
 
 impl CollisionMap {
-    pub fn new(cols: &[Bitboard; COL_NB], p: Piece) -> Self {
-        let mut data = [[0u64; ROTATION_NB]; COL_NB];
-        for x in 0..COL_NB {
-            for ri in 0..ROTATION_NB {
-                let r = Rotation::from_u8(ri as u8);
-                let mut m = 0u64;
-                if in_bounds(p, r, x as i32) {
-                    let pc = piece_table(p, r);
-                    // Check pivot (at 0,0 relative)
-                    m |= cols[x];
-                    
-                    // Check other 3 blocks
-                    for i in 0..3 {
-                        let dx = pc[i].x as i32;
-                        let dy = pc[i].y as i32;
-                        let target_x = x as i32 + dx;
-                        if is_ok_x(target_x) {
-                            let col_mask = cols[target_x as usize];
-                            if dy > 0 {
-                                m |= col_mask >> dy;
-                            } else if dy < 0 {
-                                // Floor collision: bit y is set if y+dy < 0 => y < -dy
-                                m |= col_mask << (-dy);
-                                m |= bb_low(-dy);
-                            } else {
-                                m |= col_mask;
-                            }
+    #[inline(always)]
+    pub(crate) fn new(cols: &[Bitboard; COL_NB], p: Piece) -> Self {
+        let cs = canonical_size(p);
+        let mut board = [[0u64; 4]; COL_NB];
+
+        for x in 0..COL_NB as i32 {
+            for (ri, entry) in board[x as usize].iter_mut().enumerate().take(cs) {
+                let r: Rotation = Rotation::from_u8(ri as u8);
+                if !in_bounds(p, r, x) {
+                    *entry = !0u64;
+                    continue;
+                }
+                let pc = piece_table(p, r);
+                let mut result = cols[x as usize];
+                for k in 0..3 {
+                    let cx = x + pc[k].x as i32;
+                    let cy = pc[k].y as i32;
+                    if cy < 0 {
+                        result |= !((!cols[cx as usize]) << ((-cy) as u32));
+                    } else {
+                        result |= cols[cx as usize] >> (cy as u32);
+                    }
+                }
+                *entry = result;
+            }
+        }
+
+        CollisionMap { board }
+    }
+
+    #[inline(always)]
+    pub(crate) fn get(&self, x: usize, r: Rotation) -> Bitboard {
+        self.board[x][r as usize]
+    }
+}
+
+// -- CollisionMap16 --
+// C++ CollisionMap16<p>: board[COL_NB] single Bitboard per column
+// 4 rotations packed in 16-bit lanes: bits [0..15]=North, [16..31]=East, etc.
+#[cfg(not(target_arch = "wasm32"))]
+pub(crate) struct CollisionMap16 {
+    pub(crate) board: [Bitboard; COL_NB],
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl CollisionMap16 {
+    pub(crate) fn new(cols: &[Bitboard; COL_NB], p: Piece) -> Self {
+        let mut board = [0u64; COL_NB];
+
+        for x in 0..COL_NB as i32 {
+            let mut val: Bitboard = 0;
+            for ri in 0..ROTATION_NB as u8 {
+                let r: Rotation = Rotation::from_u8(ri);
+                let rr = canonical_r(p, r);
+
+                let lane = if !in_bounds(p, rr, x) {
+                    0xFFFFu64
+                } else {
+                    let pc = piece_table(p, rr);
+                    let mut result = cols[x as usize];
+                    for k in 0..3 {
+                        let cx = x + pc[k].x as i32;
+                        let cy = pc[k].y as i32;
+                        if cy < 0 {
+                            result |= !((!cols[cx as usize]) << ((-cy) as u32));
+                        } else {
+                            result |= cols[cx as usize] >> (cy as u32);
                         }
                     }
-                } else {
-                    m = !0u64;
-                }
-                data[x][ri] = m;
+                    result & 0xFFFFu64
+                };
+
+                val |= lane << (ri as u32 * 16);
             }
+            board[x as usize] = val;
         }
-        Self { data }
+
+        CollisionMap16 { board }
     }
 
     #[inline(always)]
-    pub fn get(&self, x: usize, r: Rotation) -> Bitboard {
-        self.data[x][r as usize]
-    }
-}
-
-pub struct CollisionMap16 {
-    pub(crate) data: [Bitboard; COL_NB],
-}
-
-impl CollisionMap16 {
-    pub fn new(cols: &[Bitboard; COL_NB], p: Piece) -> Self {
-        let mut data = [0u64; COL_NB];
-        let cm = CollisionMap::new(cols, p);
-        for x in 0..COL_NB {
-            let mut val = 0u64;
-            for r in 0..ROTATION_NB {
-                val |= (cm.get(x, Rotation::from_u8(r as u8)) & 0xFFFF) << (r * 16);
-            }
-            data[x] = val;
-        }
-        Self { data }
-    }
-
-    #[inline(always)]
-    pub fn get(&self, x: usize) -> Bitboard {
-        self.data[x]
+    pub(crate) fn get(&self, x: usize) -> Bitboard {
+        self.board[x]
     }
 }
 
@@ -252,11 +339,11 @@ mod tests {
 
     #[test]
     fn test_canonical_r() {
-        assert_eq!(canonical_r(Piece::O, Rotation::East), Rotation::East);
+        assert_eq!(canonical_r(Piece::O, Rotation::East), Rotation::North);
         assert_eq!(canonical_r(Piece::I, Rotation::North), Rotation::North);
         assert_eq!(canonical_r(Piece::I, Rotation::East), Rotation::East);
-        assert_eq!(canonical_r(Piece::I, Rotation::South), Rotation::South);
-        assert_eq!(canonical_r(Piece::I, Rotation::West), Rotation::West);
+        assert_eq!(canonical_r(Piece::I, Rotation::South), Rotation::North);
+        assert_eq!(canonical_r(Piece::I, Rotation::West), Rotation::East);
         assert_eq!(canonical_r(Piece::T, Rotation::South), Rotation::South);
     }
 
@@ -264,11 +351,11 @@ mod tests {
     fn test_canonical_offset() {
         assert_eq!(
             canonical_offset(Piece::I, Rotation::South),
-            Coordinates::new(0, 0)
+            Coordinates::new(1, 0)
         );
         assert_eq!(
             canonical_offset(Piece::I, Rotation::West),
-            Coordinates::new(0, 0)
+            Coordinates::new(0, -1)
         );
         assert_eq!(
             canonical_offset(Piece::I, Rotation::North),
@@ -276,11 +363,11 @@ mod tests {
         );
         assert_eq!(
             canonical_offset(Piece::S, Rotation::South),
-            Coordinates::new(0, 0)
+            Coordinates::new(0, 1)
         );
         assert_eq!(
             canonical_offset(Piece::S, Rotation::West),
-            Coordinates::new(0, 0)
+            Coordinates::new(1, 0)
         );
         assert_eq!(
             canonical_offset(Piece::T, Rotation::South),
@@ -319,27 +406,38 @@ mod tests {
     }
 
     #[test]
-    fn test_kick_values() {
-        // SRS+ I 0->1 should have (1, 0) as second offset
-        assert_eq!(KICKS[2][0][0][1], c!(1, 0));
-        
-        // 180 I 0->2 should have (0, 1) as second offset
-        assert_eq!(KICKS_180[1][0][1], c!(0, 1));
-    }
-
-    #[test]
-    fn test_collision_floor_sz() {
-        let b = Board::new();
-        let cols = b.compute_cols();
-        
-        // S piece at East rotation (1):
-        // Blocks: [-1, 0], [0, 0], [0, 1], [1, 1] in zztetris
-        // Rotation 1 (East) of these:
-        // [0, 1], [0, 0], [1, 0], [1, -1]
-        // At absolute y=0, the block [1, -1] is at y=-1 (COLLISION)
-        let cm = CollisionMap::new(&cols, Piece::S);
-        let mask = cm.get(4, Rotation::East);
-        assert_eq!(mask & 1, 1, "S piece at y=0 vertical should collide with floor");
-        assert_eq!(mask & 2, 0, "S piece at y=1 vertical should NOT collide with floor");
+    fn rotation_spin_type_classifies_t_and_allspin_arrivals() {
+        assert_eq!(
+            rotation_spin_type(true, false, true, true, false, 0),
+            SpinType::Full
+        );
+        assert_eq!(
+            rotation_spin_type(true, false, true, false, false, 0),
+            SpinType::Mini
+        );
+        assert_eq!(
+            rotation_spin_type(true, false, true, false, false, 4),
+            SpinType::Full
+        );
+        assert_eq!(
+            rotation_spin_type(true, false, false, false, true, 0),
+            SpinType::Mini
+        );
+        assert_eq!(
+            rotation_spin_type(true, false, false, false, false, 0),
+            SpinType::NoSpin
+        );
+        assert_eq!(
+            rotation_spin_type(false, true, false, false, true, 0),
+            SpinType::Mini
+        );
+        assert_eq!(
+            rotation_spin_type(false, true, false, false, false, 0),
+            SpinType::NoSpin
+        );
+        assert_eq!(
+            rotation_spin_type(false, false, false, false, true, 0),
+            SpinType::NoSpin
+        );
     }
 }

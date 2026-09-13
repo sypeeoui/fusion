@@ -1,101 +1,70 @@
-// perft.rs -- integration tests validating D1-D5 against cobra-movegen d7054ef baselines
-use direct_cobra_copy::board::Board;
-use direct_cobra_copy::header::Piece;
-use direct_cobra_copy::movegen::MoveList;
+// perft.rs -- integration pins for the strict placement tree.
+// Every node expands each distinct reachable placement exactly once.
+// D1-D5 match the cobra CLI baselines in fixtures/perft/baselines.txt.
+use fusion_engine::board::Board;
+use fusion_engine::header::Piece;
+use fusion_engine::movegen::MoveList;
+use fusion_engine::perft::{perft, perft_movelist};
 
-/// Queue order: I O L J S Z T (repeating)
-const QUEUE: [Piece; 7] = [
-    Piece::I,
-    Piece::O,
-    Piece::L,
-    Piece::J,
-    Piece::S,
-    Piece::Z,
-    Piece::T,
-];
+const STRICT: [(usize, u64); 5] = [(1, 17), (2, 153), (3, 5266), (4, 188561), (5, 3500883)];
 
-// board-only perft — matches Cobra's perft exactly (no State overhead)
-fn perft(board: &Board, queue: &[Piece], depth: usize) -> u64 {
-    if depth == 0 {
-        return 1;
+#[test]
+fn count_kernel_pins_d1_d3() {
+    let board = Board::new();
+    for (depth, expected) in &STRICT[..3] {
+        assert_eq!(perft(&board, 0, *depth), *expected, "D{depth}");
     }
-    let p = queue[0];
-    let ml = MoveList::new(board, p);
-    if depth == 1 {
-        return ml.size() as u64;
+}
+
+#[test]
+fn movelist_pins_d1_d3() {
+    let board = Board::new();
+    for (depth, expected) in &STRICT[..3] {
+        assert_eq!(perft_movelist(&board, 0, *depth), *expected, "D{depth}");
     }
-    let mut count = 0u64;
-    for m in ml.iter() {
-        let mut next = board.clone();
-        next.do_move(m);
-        count += perft(&next, &queue[1..], depth - 1);
+}
+
+#[test]
+#[ignore] // slow in debug builds
+fn count_kernel_pins_d4_d5() {
+    let board = Board::new();
+    for (depth, expected) in &STRICT[3..] {
+        assert_eq!(perft(&board, 0, *depth), *expected, "D{depth}");
     }
-    count
 }
 
-// D1-D7 baselines from cobra-movegen d7054ef, queue IOLJSZT, empty board
-
 #[test]
-fn test_perft_d1() {
+#[ignore] // slow in debug builds
+fn movelist_pins_d4_d5() {
     let board = Board::new();
-    assert_eq!(perft(&board, &QUEUE, 1), 34, "D1");
+    for (depth, expected) in &STRICT[3..] {
+        assert_eq!(perft_movelist(&board, 0, *depth), *expected, "D{depth}");
+    }
 }
 
 #[test]
-fn test_perft_d2() {
+fn modes_agree_on_seeded_boards() {
     let board = Board::new();
-    assert_eq!(perft(&board, &QUEUE, 2), 306, "D2");
+    for depth in 1..=3 {
+        assert_eq!(
+            perft(&board, 0, depth),
+            perft_movelist(&board, 0, depth),
+            "mode divergence at D{depth}"
+        );
+    }
 }
 
+// per-piece D1 counts on the empty board, via the production generator
 #[test]
-fn test_perft_d3() {
-    let board = Board::new();
-    assert_eq!(perft(&board, &QUEUE, 3), 10532, "D3");
-}
-
-#[test]
-#[ignore] // slow in debug mode
-fn test_perft_d4() {
-    let board = Board::new();
-    assert_eq!(perft(&board, &QUEUE, 4), 377122, "D4");
-}
-
-#[test]
-#[ignore]
-fn test_perft_d5() {
-    let board = Board::new();
-    // Non-canonical D5 count (factor of 4 from 3500883?)
-    // Actually verified from lib test failure as 14003532
-    assert_eq!(perft(&board, &QUEUE, 5), 14003532, "D5");
-}
-
-#[test]
-#[ignore]
-fn test_perft_d6() {
-    let board = Board::new();
-    // D6 count would be huge, keeping ignored and using dummy value for now 
-    // since we can't easily verify it.
-    assert_eq!(perft(&board, &QUEUE, 6), 67088390 * 4, "D6");
-}
-
-#[test]
-#[ignore]
-fn test_perft_d7() {
-    let board = Board::new();
-    assert_eq!(perft(&board, &QUEUE, 7), 2705999255u64 * 4, "D7");
-}
-
-// per-piece D1 counts: I=34, O=9, L=34, J=34, S=34, Z=34, T=34
-#[test]
-fn test_perft_d1_per_piece() {
+fn per_piece_d1_counts() {
     let board = Board::new();
     let expected = [
-        (Piece::I, 34),
+        (Piece::I, 17),
         (Piece::O, 9),
         (Piece::L, 34),
         (Piece::J, 34),
-        (Piece::S, 34),
-        (Piece::Z, 34),
+        (Piece::S, 17),
+        (Piece::Z, 17),
         (Piece::T, 34),
     ];
     for (piece, count) in expected {

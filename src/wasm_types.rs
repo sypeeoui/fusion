@@ -5,11 +5,12 @@ use wasm_bindgen::prelude::*;
 
 use crate::board::Board;
 use crate::header::*;
+pub(crate) use crate::header::{piece_from_external, piece_to_external};
 use crate::state::{
-    ClearEvent, CoachingState, FatalityState, GameState, ObligationState, PhaseState, SurgeState,
+    ClearEvent, CoachingState, FatalityState, GameState, ObligationState, SurgeState,
 };
 
-// serde_json + js_sys bridge (serde-wasm-bindgen 0.6 has a parsing bug)
+// Serialization helpers (serde_json + js_sys to avoid serde-wasm-bindgen 0.6 bug)
 
 pub(crate) fn to_js<T: serde::Serialize>(val: &T) -> JsValue {
     serde_json::to_string(val)
@@ -19,36 +20,9 @@ pub(crate) fn to_js<T: serde::Serialize>(val: &T) -> JsValue {
 }
 
 pub(crate) fn from_js<T: serde::de::DeserializeOwned>(js_val: JsValue) -> Option<T> {
-    let s = js_sys::JSON::stringify(&js_val).ok()?.as_string()?;
-    web_sys::console::log_1(&format!("Fusion WASM from_js raw: {}", s).into());
-    serde_json::from_str(&s).ok()
-}
-
-// piece ordering: WASM uses Fusion v1 (I O T S Z J L), internal uses Cobra (I O T L J S Z)
-
-pub(crate) fn piece_from_external(v: u8) -> Option<Piece> {
-    match v {
-        0 => Some(Piece::I),
-        1 => Some(Piece::O),
-        2 => Some(Piece::T),
-        3 => Some(Piece::S),
-        4 => Some(Piece::Z),
-        5 => Some(Piece::J),
-        6 => Some(Piece::L),
-        _ => None,
-    }
-}
-
-pub(crate) fn piece_to_external(p: Piece) -> u8 {
-    match p {
-        Piece::I => 0,
-        Piece::O => 1,
-        Piece::T => 2,
-        Piece::S => 3,
-        Piece::Z => 4,
-        Piece::J => 5,
-        Piece::L => 6,
-    }
+    js_sys::JSON::stringify(&js_val)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s.as_string().unwrap_or_default()).ok())
 }
 
 pub(crate) fn queue_from_external(queue: Option<&[u8]>) -> Vec<Piece> {
@@ -65,14 +39,42 @@ pub(crate) fn hold_from_external(hold: Option<u8>) -> Option<Piece> {
     hold.and_then(piece_from_external)
 }
 
+pub(crate) fn board_from_external_rows(rows: Option<&[u16]>) -> Board {
+    let mut board = Board::new();
+    if let Some(rows) = rows {
+        for (y, row) in rows.iter().take(crate::board::BOARD_HEIGHT).enumerate() {
+            let row = *row & ((1u16 << COL_NB) - 1);
+            board.rows[y] = row;
+            let mut bits = row as u64;
+            while bits != 0 {
+                let x = bits.trailing_zeros() as usize;
+                board.cols[x] |= 1u64 << y;
+                bits &= bits - 1;
+            }
+        }
+    }
+    board
+}
+
 pub(crate) fn game_state_from_external_context(
     board: Board,
     current: Piece,
-    queue: Option<&[u8]>,
-    hold: Option<u8>,
+    context: Option<&ReplayFrameContextJson>,
 ) -> GameState {
-    let mut state = GameState::new(board, current, queue_from_external(queue));
-    state.hold = hold_from_external(hold);
+    let mut state = GameState::new(
+        board,
+        current,
+        queue_from_external(context.and_then(|ctx| ctx.queue.as_deref())),
+    );
+    state.hold = hold_from_external(context.and_then(|ctx| ctx.hold));
+    if let Some(context) = context {
+        state.b2b = context.b2b.unwrap_or(0).max(0).min(u8::MAX as i32) as u8;
+        state.combo = context.combo.unwrap_or(0).max(0) as u32;
+        state.pending_garbage = context.pending_garbage.unwrap_or(0).min(u8::MAX as u32) as u8;
+        state.lines_total = context.lines_total.unwrap_or(0);
+        state.bag_number = context.bag_number.unwrap_or(0);
+        state.pieces_into_bag = context.pieces_into_bag.unwrap_or(0);
+    }
     state
 }
 
@@ -84,7 +86,7 @@ pub(crate) fn spin_from_u8(v: u8) -> SpinType {
     }
 }
 
-// state -> contract string mappers
+// State-to-contract mappers
 
 pub(crate) fn fatality_to_contract(v: FatalityState) -> &'static str {
     match v {
@@ -110,26 +112,17 @@ pub(crate) fn surge_to_contract(v: SurgeState) -> &'static str {
     }
 }
 
-pub(crate) fn phase_to_contract(v: PhaseState) -> &'static str {
-    match v {
-        PhaseState::Opener => "opener",
-        PhaseState::Midgame => "midgame",
-        PhaseState::Endgame => "endgame",
-    }
-}
-
 pub(crate) fn coaching_to_contract(v: CoachingState) -> MachineDiagnosticsJson {
     MachineDiagnosticsJson {
         fatality: fatality_to_contract(v.fatality).to_string(),
         obligation: obligation_to_contract(v.obligation).to_string(),
         surge: surge_to_contract(v.surge).to_string(),
-        phase: phase_to_contract(v.phase).to_string(),
     }
 }
 
-// JSON-serializable types for the WASM boundary
+// Serde JSON types for WASM serialization
 
-#[derive(serde::Serialize, serde::Deserialize)]
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 pub(crate) struct MoveResultJson {
     pub piece: u8,
     pub rotation: u8,
@@ -140,20 +133,11 @@ pub(crate) struct MoveResultJson {
     pub hold_used: bool,
 }
 
-#[derive(serde::Serialize)]
-pub(crate) struct FindBestMoveJson {
-    pub best_move: MoveResultJson,
-    pub pv: Vec<MoveResultJson>,
-    pub score: f32,
-    pub hold_used: bool,
-}
-
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct MachineDiagnosticsJson {
     pub fatality: String,
     pub obligation: String,
     pub surge: String,
-    pub phase: String,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -172,17 +156,15 @@ pub(crate) struct MoveEvalResultJson {
     pub board_score: f32,
     pub attack_score: f32,
     pub chain_score: f32,
-    pub b2b_score: f32,
-    pub downstack_score: f32,
     pub context_score: f32,
     pub path_attack: f32,
     pub path_chain: f32,
-    pub path_b2b: f32,
-    pub path_downstack: f32,
     pub path_context: f32,
     pub insight_tags: Vec<String>,
     pub recommended_path: Vec<MoveResultJson>,
     pub best_path_attack_summary: PathAttackSummaryJson,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub actual_move: Option<MoveResultJson>,
 }
 
 #[derive(serde::Serialize)]
@@ -201,54 +183,49 @@ pub(crate) struct CoachingStepJson {
 pub(crate) struct ReplayFrameContextJson {
     pub queue: Option<Vec<u8>>,
     pub hold: Option<u8>,
+    pub opponent_board: Option<Vec<u16>>,
     pub player_pps: Option<f32>,
     pub player_app: Option<f32>,
     pub player_dsp: Option<f32>,
-    // Coaching state fields — actual per-move values from replay engine
+    // Coaching state fields - actual per-move values from replay engine
     pub lines_cleared: Option<u8>,
+    pub lines_total: Option<u32>,
     pub b2b: Option<i32>,
     pub combo: Option<i32>,
     pub combo_before: Option<i32>,
     pub hold_used: Option<bool>,
     pub pending_garbage: Option<u32>,
     pub imminent_garbage: Option<u32>,
-    // Search overrides
+    pub bag_number: Option<u32>,
+    pub pieces_into_bag: Option<u8>,
+    /// Fork-only: live search/eval overrides from the zztetris UI.
     pub search: Option<SearchOverridesJson>,
 }
 
+/// Fork-only: overrides the zztetris evaluation panel sends with each frame.
+/// Fields that no longer exist upstream are still accepted (and ignored) so
+/// old clients keep parsing.
 #[derive(serde::Deserialize)]
 pub(crate) struct SearchOverridesJson {
     pub beam_width: Option<usize>,
     pub depth: Option<usize>,
-    pub futility_delta: Option<f32>,
     pub time_budget_ms: Option<u64>,
-    pub use_tt: Option<bool>,
     pub extend_queue_7bag: Option<bool>,
-    pub attack_weight: Option<f32>,
-    pub chain_weight: Option<f32>,
-    pub b2b_weight: Option<f32>,
-    pub downstack_weight: Option<f32>,
-    pub downstack_avg_height_weight: Option<f32>,
-    pub downstack_min_height_weight: Option<f32>,
     pub pc_mode: Option<bool>,
     pub debug_pc: Option<bool>,
-    pub spin_full_weight: Option<f32>,
-    pub spin_mini_weight: Option<f32>,
-    pub path_decay: Option<f32>,
-    pub context_weight: Option<f32>,
-    pub board_weight: Option<f32>,
     pub pc_garbage: Option<u8>,
     pub pc_b2b: Option<u8>,
-    pub b2b_chaining: Option<bool>,
-    pub b2b_bonus: Option<u8>,
-    pub base_attack: Option<String>,
-    pub mini_spin_attack: Option<String>,
-    pub spin_attack: Option<String>,
-    pub combo_table: Option<u8>,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct FindBestMoveJson {
+    pub best_move: MoveResultJson,
+    pub pv: Vec<MoveResultJson>,
+    pub score: f32,
+    pub hold_used: bool,
+}
 
-// attack tracking types
+// Attack tracking types for WASM serialization
 
 pub(crate) fn spin_type_to_str(s: SpinType) -> &'static str {
     match s {
@@ -337,5 +314,113 @@ pub(crate) fn build_path_attack_summary(events: &[ClearEvent]) -> PathAttackSumm
         garbage_clear_count,
         spin_count,
         clear_events: events.iter().map(clear_event_to_json).collect(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fixture_values(key: &str) -> Vec<String> {
+        let fixture = include_str!("../training/tests/fixtures/phase0_contract_fixture.txt");
+        fixture
+            .lines()
+            .find_map(|line| line.split_once('=').filter(|(k, _)| *k == key))
+            .map(|(_, values)| values.split(',').map(|value| value.to_string()).collect())
+            .unwrap_or_else(|| panic!("missing fixture key: {key}"))
+    }
+
+    #[test]
+    fn external_piece_roundtrip_stays_stable() {
+        let expected_names = fixture_values("runtime_external_piece_order");
+        let expected = [
+            Piece::I,
+            Piece::O,
+            Piece::T,
+            Piece::S,
+            Piece::Z,
+            Piece::J,
+            Piece::L,
+        ];
+        assert_eq!(expected_names, vec!["i", "o", "t", "s", "z", "j", "l"]);
+        for (external, expected_piece) in expected.iter().enumerate() {
+            let piece = piece_from_external(external as u8).expect("piece should decode");
+            assert_eq!(piece, *expected_piece);
+            assert_eq!(piece_to_external(piece), external as u8);
+        }
+    }
+
+    #[test]
+    fn replay_frame_context_accepts_phase0_progression_fields() {
+        let json = js_sys::JSON::parse(
+            r#"{
+                \"queue\": [0,1,2],
+                \"hold\": 5,
+                \"opponent_board\": [1,2,3],
+                \"lines_cleared\": 2,
+                \"lines_total\": 14,
+                \"b2b\": 3,
+                \"combo\": 1,
+                \"combo_before\": 0,
+                \"hold_used\": true,
+                \"pending_garbage\": 4,
+                \"imminent_garbage\": 2,
+                \"bag_number\": 6,
+                \"pieces_into_bag\": 5
+            }"#,
+        )
+        .expect("valid JSON");
+        let ctx: ReplayFrameContextJson = from_js(json).expect("should deserialize");
+        assert_eq!(ctx.lines_total, Some(14));
+        assert_eq!(ctx.bag_number, Some(6));
+        assert_eq!(ctx.pieces_into_bag, Some(5));
+        assert_eq!(ctx.opponent_board.as_ref().map(Vec::len), Some(3));
+    }
+
+    #[test]
+    fn game_state_context_propagates_phase0_progression_fields() {
+        let ctx = ReplayFrameContextJson {
+            queue: Some(vec![0, 1]),
+            hold: Some(2),
+            opponent_board: Some(vec![1, 2, 3]),
+            player_pps: None,
+            player_app: None,
+            player_dsp: None,
+            lines_cleared: None,
+            lines_total: Some(14),
+            b2b: Some(3),
+            combo: Some(2),
+            combo_before: None,
+            hold_used: None,
+            pending_garbage: Some(4),
+            imminent_garbage: None,
+            bag_number: Some(6),
+            pieces_into_bag: Some(5),
+        };
+
+        let state = game_state_from_external_context(Board::new(), Piece::T, Some(&ctx));
+
+        assert_eq!(state.queue, vec![Piece::I, Piece::O]);
+        assert_eq!(state.hold, Some(Piece::T));
+        assert_eq!(state.lines_total, 14);
+        assert_eq!(state.b2b, 3);
+        assert_eq!(state.combo, 2);
+        assert_eq!(state.pending_garbage, 4);
+        assert_eq!(state.bag_number, 6);
+        assert_eq!(state.pieces_into_bag, 5);
+    }
+
+    #[test]
+    fn coaching_diagnostics_expose_active_dimensions_only() {
+        let diagnostics = coaching_to_contract(CoachingState::default());
+
+        assert_eq!(
+            serde_json::to_value(diagnostics).expect("diagnostics must serialize"),
+            serde_json::json!({
+                "fatality": "safe",
+                "obligation": "none",
+                "surge": "dormant",
+            }),
+        );
     }
 }

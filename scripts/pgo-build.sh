@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# PGO build for direct-cobra-copy perft engine
+# PGO build for fusion-engine perft engine
 #
 # Three-step:
 #   1. Instrumented build, run D5 perft to collect profile data
@@ -28,7 +28,7 @@ fi
 
 cd "$PROJECT_ROOT"
 
-echo "step 1: instrumented build + D5 profile collection"
+echo "=== Step 1: Instrumented build + D5 profile collection ==="
 rm -rf "$PGO_DIR"
 mkdir -p "$PGO_DIR"
 
@@ -50,17 +50,17 @@ if [[ "$PROFRAW_COUNT" -eq 0 ]]; then
 fi
 
 echo ""
-echo "step 2: merge profiles"
+echo "=== Step 2: Merge profiles ==="
 "$LLVM_PROFDATA" merge -o "$PGO_DIR/merged.profdata" "$PGO_DIR"/*.profraw
 echo "merged profile: $(wc -c < "$PGO_DIR/merged.profdata") bytes"
 
 echo ""
-echo "step 3: PGO-optimized build"
+echo "=== Step 3: PGO-optimized build ==="
 RUSTFLAGS="-Cprofile-use=$PGO_DIR/merged.profdata -Cllvm-args=-pgo-warn-missing-function" \
     cargo build --release --bin bench_perft --bin perft_cli 2>&1
 
 echo ""
-echo "benchmark"
+echo "=== Benchmark ==="
 if [[ "${1:-}" == "--d7" ]]; then
     echo "running D7 benchmark with PGO..."
     cargo run --release --bin bench_perft 2>&1

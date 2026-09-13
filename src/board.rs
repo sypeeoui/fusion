@@ -87,7 +87,7 @@ impl Board {
         result
     }
 
-    /// Return cached column bitboards — O(1).
+    /// Return cached column bitboards - O(1).
     /// Maintained in sync with rows by place/clear_lines/spawn_garbage/clear.
     #[inline(always)]
     pub fn compute_cols(&self) -> [Bitboard; COL_NB] {
@@ -116,13 +116,16 @@ impl Board {
     }
 
     pub fn line_clears(&self) -> Bitboard {
-        let mut result: Bitboard = 0;
-        for y in 0..BOARD_HEIGHT {
-            if self.rows[y] == FULL_ROW {
-                result |= 1u64 << y;
-            }
-        }
-        result
+        self.cols[0]
+            & self.cols[1]
+            & self.cols[2]
+            & self.cols[3]
+            & self.cols[4]
+            & self.cols[5]
+            & self.cols[6]
+            & self.cols[7]
+            & self.cols[8]
+            & self.cols[9]
     }
 
     pub fn clear(&mut self) {
@@ -143,7 +146,18 @@ impl Board {
         for y in write..BOARD_HEIGHT {
             self.rows[y] = 0;
         }
-        self.rebuild_cols();
+        // Compress each cleared row out of the column bitsets directly,
+        // highest row first so lower bit positions stay valid; this replaces
+        // the full rows scan of rebuild_cols on the do_move hot path.
+        let mut rem = l;
+        while rem != 0 {
+            let y = 63 - rem.leading_zeros();
+            let low = (1u64 << y) - 1;
+            for c in self.cols.iter_mut() {
+                *c = (*c & low) | ((*c >> 1) & !low);
+            }
+            rem &= !(1u64 << y);
+        }
     }
 
     pub fn place(&mut self, m: &Move) {
@@ -195,6 +209,32 @@ impl Board {
 
         self.clear_lines(clears);
         popcount(clears) as i32
+    }
+
+    /// Lock a piece: place, clear, and report the cleared-row mask as it
+    /// was before compaction (garbage-row accounting keys off that mask).
+    /// Illegal locks leave the board untouched.
+    pub fn lock(&mut self, m: &Move) -> LockMechanics {
+        if !self.legal_lock_placement(m) {
+            return LockMechanics {
+                cleared_mask: 0,
+                lines_cleared: 0,
+                is_pc: self.empty(),
+                resulting_height: self.height(),
+            };
+        }
+
+        self.place(m);
+        let cleared_mask = self.line_clears();
+        if cleared_mask != 0 {
+            self.clear_lines(cleared_mask);
+        }
+        LockMechanics {
+            cleared_mask,
+            lines_cleared: popcount(cleared_mask) as u8,
+            is_pc: self.empty(),
+            resulting_height: self.height(),
+        }
     }
 
     /// Max occupied row index + 1 (= height)
@@ -255,85 +295,12 @@ impl Default for Board {
     }
 }
 
-// -- MoveInfo --
-
-pub struct MoveInfo {
-    pub piece: Piece,
-    pub spin: SpinType,
-    pub clear: i32,
-    pub b2b: i16,
-    pub combo: i16,
-    pub pc: bool,
-}
-
-// -- State --
-
-#[derive(Clone)]
-pub struct State {
-    pub board: Board,
-    pub hold: Option<Piece>,
-    pub b2b: i16,
-    pub combo: i16,
-}
-
-impl State {
-    pub fn init(&mut self) {
-        self.board.clear();
-        self.hold = None;
-        self.b2b = 0;
-        self.combo = 0;
-    }
-
-    pub fn new() -> Self {
-        State {
-            board: Board::new(),
-            hold: None,
-            b2b: 0,
-            combo: 0,
-        }
-    }
-
-    pub fn do_move(&mut self, m: &Move) -> MoveInfo {
-        debug_assert!(is_ok_move(m));
-
-        let clear_count = self.board.do_move(m);
-        if clear_count == 0 {
-            self.combo = 0;
-            return MoveInfo {
-                piece: m.piece(),
-                spin: SpinType::NoSpin,
-                clear: 0,
-                b2b: 0,
-                combo: 0,
-                pc: false,
-            };
-        }
-
-        let spin = m.spin();
-        let has_spin = spin != SpinType::NoSpin;
-
-        self.b2b = if has_spin || clear_count == 4 {
-            self.b2b + 1
-        } else {
-            0
-        };
-        self.combo += 1;
-
-        MoveInfo {
-            piece: m.piece(),
-            spin,
-            clear: clear_count,
-            b2b: self.b2b,
-            combo: self.combo,
-            pc: self.board.empty(),
-        }
-    }
-}
-
-impl Default for State {
-    fn default() -> Self {
-        Self::new()
-    }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LockMechanics {
+    pub cleared_mask: Bitboard,
+    pub lines_cleared: u8,
+    pub is_pc: bool,
+    pub resulting_height: u32,
 }
 
 impl fmt::Display for Board {
@@ -378,11 +345,34 @@ mod tests {
     fn test_line_clear() {
         let mut board = Board::new();
         board.rows[0] = FULL_ROW;
+        board.rebuild_cols();
         let clears = board.line_clears();
         assert_eq!(clears & bb(0), bb(0));
 
         board.clear_lines(clears);
         assert!(board.empty());
+    }
+
+    #[test]
+    fn line_clears_reports_only_full_rows() {
+        let cases: [(&[usize], Bitboard); 4] = [
+            (&[], 0),
+            (&[0], bb(0)),
+            (&[0, 5], bb(0) | bb(5)),
+            (&[0, 5, 12, 39], bb(0) | bb(5) | bb(12) | bb(39)),
+        ];
+        for (full_rows, want) in cases {
+            let mut board = Board::new();
+            board.rows[0] = FULL_ROW & !(1u16 << 4);
+            board.rows[1] = 0b1010101010;
+            board.rows[5] = FULL_ROW & !(1u16 << 8);
+            for &y in full_rows {
+                board.rows[y] = FULL_ROW;
+            }
+            board.rebuild_cols();
+
+            assert_eq!(board.line_clears(), want);
+        }
     }
 
     #[test]
@@ -445,5 +435,110 @@ mod tests {
 
         assert_eq!(clears, 0);
         assert_eq!(board.rows, before);
+    }
+
+    #[test]
+    fn clear_lines_cols_match_rebuild_on_seeded_boards() {
+        let mut state = 0x5EED_C1EA_2026_0611u64;
+        let mut xs = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for case in 0..4000 {
+            let mut board = Board::new();
+            let h = 2 + (xs() % 16) as usize;
+            for y in 0..h {
+                board.rows[y] = (xs() & 0x3FF) as u16;
+            }
+            let full = 1 + (xs() % 3) as usize;
+            for _ in 0..full {
+                let y = (xs() % h as u64) as usize;
+                board.rows[y] = FULL_ROW;
+            }
+            board.rebuild_cols();
+            let l = board.line_clears();
+            assert_ne!(l, 0, "case={case}");
+            board.clear_lines(l);
+
+            let mut oracle = [0u64; COL_NB];
+            for y in 0..BOARD_HEIGHT {
+                let mut bits = board.rows[y] as u64;
+                while bits != 0 {
+                    let x = bits.trailing_zeros() as usize;
+                    oracle[x] |= 1u64 << y;
+                    bits &= bits - 1;
+                }
+            }
+            assert_eq!(board.cols, oracle, "case={case} l={l:#x}");
+        }
+    }
+
+    #[test]
+    fn do_move_clears_match_full_scan_on_seeded_placements() {
+        use crate::move_buffer::MoveBuffer;
+        let mut state = 0xD0_30FE_2026_0611u64;
+        let mut xs = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        let pieces = [
+            Piece::I,
+            Piece::O,
+            Piece::T,
+            Piece::L,
+            Piece::J,
+            Piece::S,
+            Piece::Z,
+        ];
+        let mut clearing = 0u32;
+        for case in 0..12000 {
+            let mut board = Board::new();
+            let h = 1 + (xs() % 12) as usize;
+            for y in 0..h {
+                let mut row = (xs() & 0x3FF) as u16;
+                if xs() % 3 != 0 {
+                    row = FULL_ROW;
+                }
+                board.rows[y] = row & !(1u16 << (xs() % 10));
+            }
+            board.rebuild_cols();
+            assert_eq!(
+                board.line_clears(),
+                0,
+                "case={case} seeded board must start clear-free"
+            );
+
+            let p = pieces[(xs() % 7) as usize];
+            let mut moves = MoveBuffer::new();
+            crate::movegen::generate(&board, &mut moves, p, false);
+            if moves.len() == 0 {
+                continue;
+            }
+            let m = moves.as_slice()[(xs() % moves.len() as u64) as usize];
+            if !board.legal_lock_placement(&m) {
+                continue;
+            }
+
+            let mut oracle_board = board.clone();
+            oracle_board.place(&m);
+            let oracle_clears = oracle_board.line_clears();
+            if oracle_clears != 0 {
+                oracle_board.clear_lines(oracle_clears);
+                clearing += 1;
+            }
+
+            let cleared = board.do_move(&m);
+            assert_eq!(cleared, popcount(oracle_clears) as i32, "case={case}");
+            assert_eq!(board.rows, oracle_board.rows, "case={case}");
+            assert_eq!(board.cols, oracle_board.cols, "case={case}");
+        }
+        assert!(
+            clearing > 200,
+            "want real clearing coverage, got {clearing}"
+        );
     }
 }
