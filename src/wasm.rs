@@ -596,6 +596,24 @@ pub fn legal_boards_loaded() -> u32 {
     crate::search::legal_boards_len() as u32
 }
 
+/// Fork-only: toggle the dead-cell prune (debug/soundness knob).
+#[wasm_bindgen(js_name = "set_dead_cell_prune")]
+pub fn set_dead_cell_prune(on: bool) {
+    crate::search::set_dead_cell_prune(on);
+}
+
+/// Fork-only debug probe: does the dead-cell prune fire on this board?
+#[wasm_bindgen(js_name = "debug_has_dead_cell")]
+pub fn debug_has_dead_cell(rows: &[u16], mask: u8) -> u64 {
+    crate::search::debug_has_dead_cell(rows, mask)
+}
+
+/// Fork-only: override how far above the starting height the PC search stacks.
+#[wasm_bindgen(js_name = "set_pc_extra_height")]
+pub fn set_pc_extra_height(h: u32) {
+    crate::search::set_pc_extra_height(h);
+}
+
 #[wasm_bindgen(js_name = "recommend_position")]
 pub fn recommend_position(request_json: &str) -> String {
     crate::recommend::recommend_json(request_json)

@@ -2228,6 +2228,12 @@ struct PcSearch<'a> {
     nodes: u64,
     timed_out: bool,
     height_limit: u32,
+    /// True when the starting board is in the `legal-boards` set, i.e. a
+    /// no-clear solution exists. Only then may the search restrict itself to
+    /// no-clear paths, which is what makes the database prune and the dead-cell
+    /// prune sound (both are exact in the broken-board/no-clear model but can
+    /// miss real solutions once rows are allowed to fall).
+    restrict_to_legal: bool,
 }
 
 #[inline]
@@ -2406,6 +2412,77 @@ thread_local! {
         std::cell::RefCell::new(None);
 }
 
+thread_local! {
+    /// Debug toggle for the dead-cell prune, which is unsound when cleared rows
+    /// physically fall (see `perfect_clear_solver.md` §6.1).
+    static DEAD_CELL_PRUNE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+pub fn set_dead_cell_prune(on: bool) {
+    DEAD_CELL_PRUNE.with(|flag| flag.set(on));
+}
+
+thread_local! {
+    /// Debug override for how far above the starting height the PC search may
+    /// stack (see `PC_MAX_EXTRA_HEIGHT`).
+    static PC_EXTRA_HEIGHT: std::cell::Cell<u32> =
+        const { std::cell::Cell::new(PC_MAX_EXTRA_HEIGHT) };
+}
+
+pub fn set_pc_extra_height(h: u32) {
+    PC_EXTRA_HEIGHT.with(|cell| cell.set(h));
+}
+
+pub fn pc_extra_height() -> u32 {
+    PC_EXTRA_HEIGHT.with(|cell| cell.get())
+}
+
+/// Fork-only debug probe: bitmask (`y * 10 + x`) of empty cells the dead-cell
+/// prune considers uncoverable by any supported placement.
+pub fn debug_has_dead_cell(rows: &[u16], mask: u8) -> u64 {
+    let mut board = crate::board::Board::new();
+    for (y, row) in rows.iter().take(crate::board::BOARD_HEIGHT).enumerate() {
+        board.rows[y] = *row & crate::board::FULL_ROW;
+        let mut bits = board.rows[y] as u64;
+        while bits != 0 {
+            let x = bits.trailing_zeros() as usize;
+            board.cols[x] |= 1u64 << y;
+            bits &= bits - 1;
+        }
+    }
+    let mut covered = [0u16; crate::board::BOARD_HEIGHT];
+    for &p in crate::header::ALL_PIECES.iter() {
+        if mask & (1u8 << (p as u8)) == 0 {
+            continue;
+        }
+        let mut moves = crate::move_buffer::MoveBuffer::new();
+        crate::movegen::generate(&board, &mut moves, p, true);
+        for &m in moves.as_slice() {
+            if !board.legal_lock_placement(&m) {
+                continue;
+            }
+            for (x, y) in pc_move_cells(&m) {
+                if x >= 0 && (x as usize) < COL_NB && y >= 0 {
+                    covered[y as usize] |= 1u16 << x;
+                }
+            }
+        }
+    }
+    let mut dead = 0u64;
+    let h = board.height();
+    for y in 0..h {
+        let empty = (!board.rows[y as usize]) & crate::board::FULL_ROW;
+        let uncovered = empty & !covered[y as usize];
+        let mut bits = uncovered as u64;
+        while bits != 0 {
+            let x = bits.trailing_zeros();
+            dead |= 1u64 << (y * 10 + x);
+            bits &= bits - 1;
+        }
+    }
+    dead
+}
+
 pub fn set_legal_boards(boards: Vec<u64>) {
     LEGAL_BOARDS.with(|slot| *slot.borrow_mut() = Some(boards));
 }
@@ -2501,7 +2578,7 @@ fn pc_dfs(
     // set cannot be filled to a 4-line clear without an intermediate clear, so
     // the branch is dead. Skip the check once a clear has happened: the table is
     // defined for the no-clear/broken-board model, and fusion lets rows fall.
-    if !cleared && board.height() <= 4 {
+    if ctx.restrict_to_legal && !cleared && board.height() <= 4 {
         if let Some(false) = pc_legal_boards_contains(pc_legal_board_mask(board)) {
             let entry = ctx.tt.entry(hash).or_insert(0);
             if (remaining as u8) > *entry {
@@ -2514,7 +2591,8 @@ fn pc_dfs(
     // Sound dead-cell prune: if an empty cell can no longer be covered by any
     // available piece, the position is unsolvable. Only worth the move
     // generation cost when the board actually has holes.
-    if pc_count_holes(board) > 0 {
+    let dead_cell_prune = DEAD_CELL_PRUNE.with(|flag| flag.get());
+    if ctx.restrict_to_legal && dead_cell_prune && pc_count_holes(board) > 0 {
         let mask = pc_available_mask(ctx.queue, q_idx, current, hold);
         if pc_has_dead_cell(board, mask) {
             let entry = ctx.tt.entry(hash).or_insert(0);
@@ -2630,7 +2708,12 @@ pub fn find_best_move_pc(
         return None;
     }
 
-    let height_limit = (state.board.height() + PC_MAX_EXTRA_HEIGHT).max(6);
+    let height_limit = (state.board.height() + pc_extra_height()).max(6);
+    // Only restrict to no-clear paths when the database says the start board is
+    // solvable without clearing a line. Otherwise the falling-row search must
+    // stay free to clear mid-route, so both prunes are disabled.
+    let restrict_to_legal = state.board.height() <= 4
+        && pc_legal_boards_contains(pc_legal_board_mask(&state.board)) == Some(true);
     let mut tt: std::collections::HashMap<u64, u8> = std::collections::HashMap::new();
 
     // Iterative deepening: try shallow solutions first. This finds the
@@ -2648,6 +2731,7 @@ pub fn find_best_move_pc(
             nodes: 0,
             timed_out: false,
             height_limit,
+            restrict_to_legal,
         };
         let mut path = Vec::new();
 
