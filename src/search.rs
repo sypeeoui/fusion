@@ -5,6 +5,7 @@ use crate::bag;
 
 use crate::eval::EvalWeights;
 
+use crate::header::{Move, Piece, COL_NB};
 use crate::state::GameState;
 use crate::transposition::{get_zobrist_keys, TranspositionTable, DEFAULT_TT_SIZE};
 use smallvec::SmallVec;
@@ -1061,6 +1062,313 @@ fn get_now_ms() -> u64 {
     js_sys::Date::now() as u64
 }
 
+/// Maximum playfield height the PC search is allowed to build to. PC routes
+/// almost never need to stack above the starting height by more than a couple
+/// of rows, and bounding this keeps the DFS from wandering into hopeless
+/// tall subtrees.
+const PC_MAX_EXTRA_HEIGHT: u32 = 2;
+
+struct PcSearch<'a> {
+    queue: &'a [Piece],
+    /// State hash -> deepest `remaining` (pieces left) already fully searched.
+    /// Sharing this across iterative-deepening iterations avoids re-searching
+    /// states that were already proven unsolvable with at least as much depth.
+    tt: std::collections::HashMap<u64, u8>,
+    start_time: u64,
+    time_limit: u64,
+    nodes: u64,
+    timed_out: bool,
+    height_limit: u32,
+}
+
+#[inline]
+fn pc_state_hash(
+    board: &crate::board::Board,
+    current: Piece,
+    hold: Option<Piece>,
+    q_idx: usize,
+    zobrist: &crate::transposition::ZobristKeys,
+) -> u64 {
+    // The board, the active piece, the hold piece, and the queue position
+    // together determine the remaining search problem.
+    zobrist.hash_board(board)
+        ^ (current as u64 + 1).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+        ^ hold
+            .map(|p| p as u64 + 1)
+            .unwrap_or(0)
+            .wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+        ^ (q_idx as u64 + 1).wrapping_mul(0x1656_67B1_9E37_79F9)
+}
+
+/// Count empty cells that sit below the top filled cell of their column
+/// ("holes"). Holes are the main thing a PC search should avoid creating.
+#[inline]
+fn pc_count_holes(board: &crate::board::Board) -> u32 {
+    let mut holes = 0;
+    for x in 0..COL_NB {
+        let col = board.cols[x];
+        if col == 0 {
+            continue;
+        }
+        let top = 63 - col.leading_zeros();
+        let below = if top == 0 { 0 } else { (!0u64) >> (64 - top) };
+        holes += (below & !col).count_ones();
+    }
+    holes
+}
+
+#[inline]
+fn pc_move_cells(m: &Move) -> [(i32, i32); 4] {
+    let pc = m.cells();
+    [
+        (m.x(), m.y()),
+        (pc.coords[0].x as i32 + m.x(), pc.coords[0].y as i32 + m.y()),
+        (pc.coords[1].x as i32 + m.x(), pc.coords[1].y as i32 + m.y()),
+        (pc.coords[2].x as i32 + m.x(), pc.coords[2].y as i32 + m.y()),
+    ]
+}
+
+/// Lowest empty cell of the playfield. Filling from the bottom up is the
+/// strongest move-ordering signal for PC searches.
+fn pc_lowest_empty(board: &crate::board::Board) -> Option<(i32, i32)> {
+    let h = board.height();
+    for y in 0..=h {
+        if y as usize >= crate::board::BOARD_HEIGHT {
+            break;
+        }
+        let row = board.rows[y as usize];
+        for x in 0..COL_NB as i32 {
+            if row & (1u16 << x) == 0 {
+                return Some((x, y as i32));
+            }
+        }
+    }
+    None
+}
+
+/// Bitmask (indexed by `Piece as u8`) of every piece type that could still be
+/// placed from this node.
+fn pc_available_mask(queue: &[Piece], q_idx: usize, current: Piece, hold: Option<Piece>) -> u8 {
+    let mut mask = 1u8 << (current as u8);
+    if let Some(h) = hold {
+        mask |= 1u8 << (h as u8);
+    }
+    for &p in queue.get(q_idx..).unwrap_or(&[]) {
+        mask |= 1u8 << (p as u8);
+    }
+    mask
+}
+
+/// True when some empty cell in the playfield cannot be covered by any legal
+/// placement of any still-available piece. Every cell has to be covered before
+/// the board can clear, so such a cell makes the position unsolvable.
+fn pc_has_dead_cell(board: &crate::board::Board, mask: u8) -> bool {
+    let mut covered = [0u16; crate::board::BOARD_HEIGHT];
+    for &p in crate::header::ALL_PIECES.iter() {
+        if mask & (1u8 << (p as u8)) == 0 {
+            continue;
+        }
+        let mut moves = crate::move_buffer::MoveBuffer::new();
+        crate::movegen::generate(board, &mut moves, p, true);
+        for &m in moves.as_slice() {
+            if !board.legal_lock_placement(&m) {
+                continue;
+            }
+            for (x, y) in pc_move_cells(&m) {
+                if x >= 0 && (x as usize) < COL_NB && y >= 0 {
+                    covered[y as usize] |= 1u16 << x;
+                }
+            }
+        }
+    }
+
+    let h = board.height();
+    for y in 0..h {
+        let row = board.rows[y as usize];
+        let empty = (!row) & crate::board::FULL_ROW;
+        if empty & !covered[y as usize] != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+#[inline]
+fn pc_score(board: &crate::board::Board, clears: i32, covers_low: bool) -> i32 {
+    let h = board.height() as i32;
+    let holes = pc_count_holes(board) as i32;
+    clears * 10_000 + if covers_low { 4_000 } else { 0 } - holes * 200 - h * 20
+}
+
+struct PcCandidate {
+    score: i32,
+    mv: Move,
+    board: crate::board::Board,
+    next_current: Piece,
+    next_hold: Option<Piece>,
+    next_q: usize,
+}
+
+fn pc_collect(
+    board: &crate::board::Board,
+    piece: Piece,
+    next_current: Piece,
+    next_hold: Option<Piece>,
+    next_q: usize,
+    low: Option<(i32, i32)>,
+    ctx: &PcSearch<'_>,
+    out: &mut Vec<PcCandidate>,
+) {
+    let mut moves = crate::move_buffer::MoveBuffer::new();
+    crate::movegen::generate(board, &mut moves, piece, true);
+    for &m in moves.as_slice() {
+        if !board.legal_lock_placement(&m) {
+            continue;
+        }
+        let mut nb = board.clone();
+        let clears = nb.do_move(&m);
+        if nb.height() > ctx.height_limit {
+            continue;
+        }
+        let covers_low = low.is_some_and(|(lx, ly)| {
+            pc_move_cells(&m).iter().any(|&(x, y)| x == lx && y == ly)
+        });
+        let score = pc_score(&nb, clears, covers_low);
+        out.push(PcCandidate {
+            score,
+            mv: m,
+            board: nb,
+            next_current,
+            next_hold,
+            next_q,
+        });
+    }
+}
+
+fn pc_dfs(
+    board: &crate::board::Board,
+    current: Piece,
+    hold: Option<Piece>,
+    q_idx: usize,
+    remaining: usize,
+    zobrist: &crate::transposition::ZobristKeys,
+    ctx: &mut PcSearch<'_>,
+    path: &mut Vec<Move>,
+) -> bool {
+    if board.is_empty() {
+        return true;
+    }
+    if remaining == 0 {
+        return false;
+    }
+    if board.height() > ctx.height_limit {
+        return false;
+    }
+
+    ctx.nodes += 1;
+    if ctx.nodes & 0x3FF == 0 && get_now_ms().wrapping_sub(ctx.start_time) > ctx.time_limit {
+        ctx.timed_out = true;
+        return false;
+    }
+
+    let hash = pc_state_hash(board, current, hold, q_idx, zobrist);
+    if let Some(&searched) = ctx.tt.get(&hash) {
+        if searched as usize >= remaining {
+            return false;
+        }
+    }
+
+    // Sound dead-cell prune: if an empty cell can no longer be covered by any
+    // available piece, the position is unsolvable. Only worth the move
+    // generation cost when the board actually has holes.
+    if pc_count_holes(board) > 0 {
+        let mask = pc_available_mask(ctx.queue, q_idx, current, hold);
+        if pc_has_dead_cell(board, mask) {
+            let entry = ctx.tt.entry(hash).or_insert(0);
+            if (remaining as u8) > *entry {
+                *entry = remaining as u8;
+            }
+            return false;
+        }
+    }
+
+    let low = pc_lowest_empty(board);
+    let mut candidates: Vec<PcCandidate> = Vec::with_capacity(96);
+
+    let after_current = ctx.queue.get(q_idx).copied().unwrap_or(Piece::I);
+    pc_collect(
+        board,
+        current,
+        after_current,
+        hold,
+        q_idx + 1,
+        low,
+        ctx,
+        &mut candidates,
+    );
+
+    if let Some(held) = hold {
+        if held != current {
+            pc_collect(
+                board,
+                held,
+                after_current,
+                Some(current),
+                q_idx + 1,
+                low,
+                ctx,
+                &mut candidates,
+            );
+        }
+    } else if q_idx < ctx.queue.len() {
+        // Empty hold: swapping puts the next queue piece on the board and the
+        // current piece into hold.
+        let held_piece = ctx.queue[q_idx];
+        if held_piece != current {
+            let after_hold = ctx.queue.get(q_idx + 1).copied().unwrap_or(Piece::I);
+            pc_collect(
+                board,
+                held_piece,
+                after_hold,
+                Some(current),
+                q_idx + 2,
+                low,
+                ctx,
+                &mut candidates,
+            );
+        }
+    }
+
+    candidates.sort_unstable_by(|a, b| b.score.cmp(&a.score));
+
+    for cand in &candidates {
+        path.push(cand.mv);
+        let found = pc_dfs(
+            &cand.board,
+            cand.next_current,
+            cand.next_hold,
+            cand.next_q,
+            remaining - 1,
+            zobrist,
+            ctx,
+            path,
+        );
+        if found {
+            return true;
+        }
+        path.pop();
+        if ctx.timed_out {
+            return false;
+        }
+    }
+
+    let entry = ctx.tt.entry(hash).or_insert(0);
+    if (remaining as u8) > *entry {
+        *entry = remaining as u8;
+    }
+    false
+}
+
 pub fn find_best_move_pc(
     state: &GameState,
     config: &SearchConfig,
@@ -1072,12 +1380,12 @@ pub fn find_best_move_pc(
         state.queue.clone()
     };
 
-    let max_depth = config.depth.max(1); // Use full requested depth
+    let max_depth = config.depth.max(1);
     let zobrist_keys = get_zobrist_keys();
     let start_time = get_now_ms();
     // PC search is an explicit action, so give it a little more headroom than
-    // the default evaluation budget. With the time budget now actually
-    // enforced, iterative deepening cannot run away.
+    // the default evaluation budget. With the time budget actually enforced,
+    // iterative deepening cannot run away.
     let time_limit = config.time_budget_ms.unwrap_or(1000).max(200);
 
     // Already clear: there is no PC to search for.
@@ -1085,31 +1393,43 @@ pub fn find_best_move_pc(
         return None;
     }
 
+    let height_limit = (state.board.height() + PC_MAX_EXTRA_HEIGHT).max(6);
+    let mut tt: std::collections::HashMap<u64, u8> = std::collections::HashMap::new();
+
     // Iterative deepening: try shallow solutions first. This finds the
     // smallest PC (fewest pieces) and, crucially, cannot get lost in a deep
-    // subtree of a bad first placement the way a full-depth DFS can. A fresh
-    // transposition set is used per depth because a failed shallow search must
-    // not prune a deeper one.
+    // subtree of a bad first placement the way a full-depth DFS can. The
+    // transposition table is shared between iterations, keyed by the number of
+    // pieces still available, so states proven unsolvable at a shallow depth
+    // are not re-searched when the depth grows.
     for depth in 1..=max_depth {
-        let mut pc_tt = std::collections::HashSet::with_capacity(1000);
+        let mut ctx = PcSearch {
+            queue: &search_queue,
+            tt,
+            start_time,
+            time_limit,
+            nodes: 0,
+            timed_out: false,
+            height_limit,
+        };
         let mut path = Vec::new();
 
-        if find_pc_path(
+        let found = pc_dfs(
             &state.board,
             state.current,
             state.hold,
-            &search_queue,
             0,
             depth,
             &zobrist_keys,
-            &mut pc_tt,
+            &mut ctx,
             &mut path,
-            start_time,
-            Some(time_limit),
-            config.debug_pc,
-        ) {
-            // find_pc_path reports success with an empty path only when the
-            // board starts clear, which we already handled above.
+        );
+
+        tt = ctx.tt;
+
+        if found {
+            // pc_dfs reports success with an empty path only when the board
+            // starts clear, which we already handled above.
             if path.is_empty() {
                 return None;
             }
@@ -1127,7 +1447,7 @@ pub fn find_best_move_pc(
             });
         }
 
-        if get_now_ms() - start_time > time_limit {
+        if ctx.timed_out || get_now_ms().wrapping_sub(start_time) > time_limit {
             pc_log!(
                 config.debug_pc,
                 "PC iterative deepening timed out at depth {}",
@@ -1138,125 +1458,4 @@ pub fn find_best_move_pc(
     }
 
     None
-}
-
-fn find_pc_path(
-    board: &crate::board::Board,
-    current: crate::header::Piece,
-    hold: Option<crate::header::Piece>,
-    queue: &[crate::header::Piece],
-    q_idx: usize, // Index of the piece that will be served NEXT from the queue
-    max_depth: usize, // pieces to place
-    zobrist_keys: &crate::transposition::ZobristKeys,
-    tt: &mut std::collections::HashSet<u64>,
-    path: &mut Vec<crate::header::Move>,
-    start_time: u64,
-    time_budget: Option<u64>,
-    debug_enabled: bool,
-) -> bool {
-    if board.is_empty() {
-        pc_log!(debug_enabled, "FOUND PC solution at depth {}!", path.len());
-        return true;
-    }
-    if path.len() >= max_depth {
-        return false;
-    }
-    if board.height() > 6 {
-        return false;
-    }
-
-    // Timeout check
-    if let Some(budget) = time_budget {
-        if get_now_ms() - start_time > budget {
-            pc_log!(debug_enabled, "PC search timed out at depth {}", path.len());
-            return false;
-        }
-    }
-
-    let hash = zobrist_keys.hash_board(board);
-    // State hash MUST include current piece and hold piece
-    let state_hash = hash 
-        ^ (path.len() as u64) 
-        ^ (hold.map(|p| p as u64 + 1).unwrap_or(0) << 32)
-        ^ ((current as u64 + 1) << 40);
-
-    if !tt.insert(state_hash) {
-        return false;
-    }
-
-    let mut moves = crate::move_buffer::MoveBuffer::new();
-    
-    // 1. Try current piece
-    crate::movegen::generate(board, &mut moves, current, true);
-    pc_log!(debug_enabled, "Depth {}: Trying current piece {:?} ({} moves)", path.len(), current, moves.len());
-    for m in moves.as_slice() {
-        if !board.legal_lock_placement(m) {
-            continue;
-        }
-        let mut next_board = board.clone();
-        next_board.do_move(m);
-        if next_board.height() > 6 {
-            continue;
-        }
-
-        path.push(*m);
-        let next_piece = if q_idx < queue.len() { queue[q_idx] } else { crate::header::Piece::I };
-        if find_pc_path(&next_board, next_piece, hold, queue, q_idx + 1, max_depth, zobrist_keys, tt, path, start_time, time_budget, debug_enabled) {
-            return true;
-        }
-        path.pop();
-    }
-
-    // 2. Try hold piece
-    if let Some(held) = hold {
-        if held != current {
-            moves = crate::move_buffer::MoveBuffer::new();
-            crate::movegen::generate(board, &mut moves, held, true);
-            pc_log!(debug_enabled, "Depth {}: Trying hold piece {:?} ({} moves)", path.len(), held, moves.len());
-            for m in moves.as_slice() {
-                if !board.legal_lock_placement(m) {
-                    continue;
-                }
-                let mut next_board = board.clone();
-                next_board.do_move(m);
-                if next_board.height() > 6 {
-                    continue;
-                }
-
-                path.push(*m);
-                let next_piece = if q_idx < queue.len() { queue[q_idx] } else { crate::header::Piece::I };
-                if find_pc_path(&next_board, next_piece, Some(current), queue, q_idx + 1, max_depth, zobrist_keys, tt, path, start_time, time_budget, debug_enabled) {
-                    return true;
-                }
-                path.pop();
-            }
-        }
-    } else if q_idx < queue.len() {
-        // Initial hold: use next piece from queue, current piece goes to hold
-        let held_piece = queue[q_idx];
-        if held_piece != current {
-            moves = crate::move_buffer::MoveBuffer::new();
-            crate::movegen::generate(board, &mut moves, held_piece, true);
-            pc_log!(debug_enabled, "Depth {}: Initial hold, using queue[{}]: {:?} ({} moves)", path.len(), q_idx, held_piece, moves.len());
-            for m in moves.as_slice() {
-                if !board.legal_lock_placement(m) {
-                    continue;
-                }
-                let mut next_board = board.clone();
-                next_board.do_move(m);
-                if next_board.height() > 6 {
-                    continue;
-                }
-
-                path.push(*m);
-                let next_piece = if q_idx + 1 < queue.len() { queue[q_idx + 1] } else { crate::header::Piece::I };
-                if find_pc_path(&next_board, next_piece, Some(current), queue, q_idx + 2, max_depth, zobrist_keys, tt, path, start_time, time_budget, debug_enabled) {
-                    return true;
-                }
-                path.pop();
-            }
-        }
-    }
-
-    false
 }
