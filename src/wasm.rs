@@ -580,6 +580,22 @@ pub fn find_best_move_wasm(board: &JsBoard, piece: u8, frame: JsValue) -> JsValu
     caught_to_js(result)
 }
 
+/// Fork-only: load the `legal-boards` database (delta-encoded LEB128) into the
+/// PC search so it can prune branches that cannot reach a 4-line clear.
+/// Returns the number of boards loaded, or 0 if the input is malformed.
+#[wasm_bindgen(js_name = "load_legal_boards")]
+pub fn load_legal_boards(bytes: &[u8]) -> u32 {
+    let boards = crate::search::parse_legal_boards(bytes);
+    let count = boards.len() as u32;
+    crate::search::set_legal_boards(boards);
+    count
+}
+
+#[wasm_bindgen(js_name = "legal_boards_loaded")]
+pub fn legal_boards_loaded() -> u32 {
+    crate::search::legal_boards_len() as u32
+}
+
 #[wasm_bindgen(js_name = "recommend_position")]
 pub fn recommend_position(request_json: &str) -> String {
     crate::recommend::recommend_json(request_json)

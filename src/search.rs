@@ -2356,6 +2356,8 @@ struct PcCandidate {
     next_current: Piece,
     next_hold: Option<Piece>,
     next_q: usize,
+    /// Whether any line has already cleared on the path to this candidate.
+    next_cleared: bool,
 }
 
 fn pc_collect(
@@ -2364,6 +2366,7 @@ fn pc_collect(
     next_current: Piece,
     next_hold: Option<Piece>,
     next_q: usize,
+    cleared: bool,
     low: Option<(i32, i32)>,
     ctx: &PcSearch<'_>,
     out: &mut Vec<PcCandidate>,
@@ -2390,8 +2393,73 @@ fn pc_collect(
             next_current,
             next_hold,
             next_q,
+            next_cleared: cleared || clears > 0,
         });
     }
+}
+
+thread_local! {
+    /// Sorted list of every 4-row board from which a perfect clear is reachable
+    /// within 10 pieces (the `legal-boards` database, TETR.IO/SRS+ physics).
+    /// Populated from JS by `load_legal_boards`; `None` disables the prune.
+    static LEGAL_BOARDS: std::cell::RefCell<Option<Vec<u64>>> =
+        std::cell::RefCell::new(None);
+}
+
+pub fn set_legal_boards(boards: Vec<u64>) {
+    LEGAL_BOARDS.with(|slot| *slot.borrow_mut() = Some(boards));
+}
+
+pub fn legal_boards_len() -> usize {
+    LEGAL_BOARDS.with(|slot| slot.borrow().as_ref().map_or(0, Vec::len))
+}
+
+fn read_leb128(bytes: &[u8], i: &mut usize) -> u64 {
+    let mut shift = 0u32;
+    let mut value = 0u64;
+    loop {
+        let byte = bytes[*i];
+        *i += 1;
+        value |= ((byte & 0x7f) as u64) << shift;
+        if byte & 0x80 == 0 {
+            break;
+        }
+        shift += 7;
+    }
+    value
+}
+
+/// Decode the delta-encoded LEB128 `legal-boards` file into a sorted board list.
+pub fn parse_legal_boards(bytes: &[u8]) -> Vec<u64> {
+    let mut i = 0usize;
+    let count = read_leb128(bytes, &mut i) as usize;
+    let mut boards = Vec::with_capacity(count);
+    let mut current = 0u64;
+    for _ in 0..count {
+        current = current.wrapping_add(read_leb128(bytes, &mut i));
+        boards.push(current);
+    }
+    boards
+}
+
+/// The bottom four rows of a board as a single 40-bit mask, in the same layout
+/// the `legal-boards` database uses (bit `row * 10 + col`, row 0 at the bottom).
+#[inline]
+fn pc_legal_board_mask(board: &crate::board::Board) -> u64 {
+    (board.rows[0] as u64)
+        | ((board.rows[1] as u64) << 10)
+        | ((board.rows[2] as u64) << 20)
+        | ((board.rows[3] as u64) << 30)
+}
+
+/// `Some(true)`/`Some(false)` when the database is loaded, `None` otherwise.
+#[inline]
+fn pc_legal_boards_contains(mask: u64) -> Option<bool> {
+    LEGAL_BOARDS.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map(|boards| boards.binary_search(&mask).is_ok())
+    })
 }
 
 fn pc_dfs(
@@ -2400,6 +2468,7 @@ fn pc_dfs(
     hold: Option<Piece>,
     q_idx: usize,
     remaining: usize,
+    cleared: bool,
     zobrist: &crate::transposition::ZobristKeys,
     ctx: &mut PcSearch<'_>,
     path: &mut Vec<Move>,
@@ -2423,6 +2492,21 @@ fn pc_dfs(
     let hash = pc_state_hash(board, current, hold, q_idx, zobrist);
     if let Some(&searched) = ctx.tt.get(&hash) {
         if searched as usize >= remaining {
+            return false;
+        }
+    }
+
+    // Precomputed-database prune. On a board that still fits in the bottom four
+    // rows and has not cleared a line yet, a board absent from the `legal-boards`
+    // set cannot be filled to a 4-line clear without an intermediate clear, so
+    // the branch is dead. Skip the check once a clear has happened: the table is
+    // defined for the no-clear/broken-board model, and fusion lets rows fall.
+    if !cleared && board.height() <= 4 {
+        if let Some(false) = pc_legal_boards_contains(pc_legal_board_mask(board)) {
+            let entry = ctx.tt.entry(hash).or_insert(0);
+            if (remaining as u8) > *entry {
+                *entry = remaining as u8;
+            }
             return false;
         }
     }
@@ -2451,6 +2535,7 @@ fn pc_dfs(
         after_current,
         hold,
         q_idx + 1,
+        cleared,
         low,
         ctx,
         &mut candidates,
@@ -2464,6 +2549,7 @@ fn pc_dfs(
                 after_current,
                 Some(current),
                 q_idx + 1,
+                cleared,
                 low,
                 ctx,
                 &mut candidates,
@@ -2481,6 +2567,7 @@ fn pc_dfs(
                 after_hold,
                 Some(current),
                 q_idx + 2,
+                cleared,
                 low,
                 ctx,
                 &mut candidates,
@@ -2498,6 +2585,7 @@ fn pc_dfs(
             cand.next_hold,
             cand.next_q,
             remaining - 1,
+            cand.next_cleared,
             zobrist,
             ctx,
             path,
@@ -2569,6 +2657,7 @@ pub fn find_best_move_pc(
             state.hold,
             0,
             depth,
+            false,
             &zobrist_keys,
             &mut ctx,
             &mut path,
