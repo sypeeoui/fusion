@@ -1074,19 +1074,57 @@ pub fn find_best_move_pc(
     let max_depth = config.depth.max(1); // Use full requested depth
     let zobrist_keys = get_zobrist_keys();
     let start_time = get_now_ms();
-    let time_limit = config.time_budget_ms.unwrap_or(1000); // Default to 1s
+    // PC search is an explicit action, so give it a little more headroom than
+    // the default evaluation budget. This keeps the two-phase search below
+    // from timing out before it can even find a solution.
+    let time_limit = config.time_budget_ms.unwrap_or(1000).max(200);
 
     // Already clear: there is no PC to search for.
     if state.board.is_empty() {
         return None;
     }
 
-    // Iterative deepening: try shorter solutions first so the displayed PC is
-    // the smallest one (fewest pieces). A fresh transposition set is used per
-    // depth because a failed shallow search must not prune a deeper one.
-    for depth in 1..=max_depth {
-        let mut pc_tt = std::collections::HashSet::with_capacity(1000);
-        let mut path = Vec::new();
+    // Phase 1: find *any* PC as fast as possible (single DFS to full depth).
+    // This mirrors the original behaviour and guarantees we still suggest a
+    // route even when the follow-up shortening pass has no time left.
+    let mut pc_tt = std::collections::HashSet::with_capacity(1000);
+    let mut path = Vec::new();
+    let found = find_pc_path(
+        &state.board,
+        state.current,
+        state.hold,
+        &search_queue,
+        0,
+        max_depth,
+        &zobrist_keys,
+        &mut pc_tt,
+        &mut path,
+        start_time,
+        Some(time_limit),
+        config.debug_pc,
+    );
+
+    if !found || path.is_empty() {
+        return None;
+    }
+
+    let mut best = path;
+
+    // Phase 2: with the remaining budget, iteratively try shorter depths so
+    // the suggested PC is the smallest one (fewest pieces). The first depth
+    // that succeeds is the minimum because we test them in increasing order.
+    for depth in 1..best.len() {
+        if get_now_ms() - start_time > time_limit {
+            pc_log!(
+                config.debug_pc,
+                "PC shortening timed out at depth {}",
+                depth
+            );
+            break;
+        }
+
+        let mut short_tt = std::collections::HashSet::with_capacity(1000);
+        let mut short_path = Vec::new();
 
         if find_pc_path(
             &state.board,
@@ -1096,42 +1134,30 @@ pub fn find_best_move_pc(
             0,
             depth,
             &zobrist_keys,
-            &mut pc_tt,
-            &mut path,
+            &mut short_tt,
+            &mut short_path,
             start_time,
             Some(time_limit),
             config.debug_pc,
         ) {
-            // find_pc_path can report success with an empty path when the board
-            // starts clear; guard against indexing it.
-            if path.is_empty() {
-                return None;
+            if !short_path.is_empty() {
+                best = short_path;
             }
-
-            let best_move = path[0];
-            let hold_used = best_move.piece() != state.current;
-
-            return Some(SearchResult {
-                best_move,
-                hold_used,
-                score: 1000.0,
-                pv: path,
-                coaching_state: state.coaching,
-                pv_clear_events: Vec::new(),
-            });
-        }
-
-        if get_now_ms() - start_time > time_limit {
-            pc_log!(
-                config.debug_pc,
-                "PC iterative deepening timed out at depth {}",
-                depth
-            );
             break;
         }
     }
 
-    None
+    let best_move = best[0];
+    let hold_used = best_move.piece() != state.current;
+
+    Some(SearchResult {
+        best_move,
+        hold_used,
+        score: 1000.0,
+        pv: best,
+        coaching_state: state.coaching,
+        pv_clear_events: Vec::new(),
+    })
 }
 
 fn find_pc_path(
