@@ -140,6 +140,14 @@ pub(crate) struct MoveResultJson {
     pub hold_used: bool,
 }
 
+#[derive(serde::Serialize)]
+pub(crate) struct FindBestMoveJson {
+    pub best_move: MoveResultJson,
+    pub pv: Vec<MoveResultJson>,
+    pub score: f32,
+    pub hold_used: bool,
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct MachineDiagnosticsJson {
     pub fatality: String,

@@ -565,13 +565,28 @@ pub fn find_best_move_wasm(board: &JsBoard, piece: u8, frame: JsValue) -> JsValu
         web_sys::console::log_1(&format!("Fusion WASM: Initial state height: {}", state.board.height()).into());
 
         let search_result = find_best_move(&state, &config, &weights)?;
-        Some(MoveResultJson {
-            piece: piece_to_external(search_result.best_move.piece()),
-            rotation: search_result.best_move.rotation() as u8,
-            x: search_result.best_move.x() as i8,
-            y: search_result.best_move.y() as i8,
+
+        let to_move_json = |m: &Move| MoveResultJson {
+            piece: piece_to_external(m.piece()),
+            rotation: m.rotation() as u8,
+            x: m.x() as i8,
+            y: m.y() as i8,
             score: search_result.score,
-            spin: search_result.best_move.spin() as u8,
+            spin: m.spin() as u8,
+            hold_used: search_result.hold_used,
+        };
+
+        let best_move = to_move_json(&search_result.best_move);
+        let pv: Vec<MoveResultJson> = if search_result.pv.is_empty() {
+            vec![to_move_json(&search_result.best_move)]
+        } else {
+            search_result.pv.iter().map(to_move_json).collect()
+        };
+
+        Some(FindBestMoveJson {
+            best_move,
+            pv,
+            score: search_result.score,
             hold_used: search_result.hold_used,
         })
     }));

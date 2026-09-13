@@ -553,6 +553,58 @@ mod tests {
     }
 
     #[test]
+    fn test_pc_mode_returns_minimal_path() {
+        // Bottom two rows each missing their two rightmost cells. A single O
+        // placement at x=8 fills both rows and clears them: a one-piece PC.
+        let mut board = Board::new();
+        board.rows[0] = 0x00FF;
+        board.rows[1] = 0x00FF;
+        for x in 0..COL_NB {
+            let mut col: u64 = 0;
+            for y in 0..crate::board::BOARD_HEIGHT {
+                if board.rows[y] & (1u16 << x) != 0 {
+                    col |= 1u64 << y;
+                }
+            }
+            board.cols[x] = col;
+        }
+
+        let state = GameState::new(board, Piece::O, vec![]);
+        let config = SearchConfig {
+            pc_mode: true,
+            depth: 6,
+            time_budget_ms: Some(2000),
+            ..SearchConfig::default()
+        };
+        let weights = EvalWeights::default();
+
+        let result = find_best_move(&state, &config, &weights)
+            .expect("a one-piece PC should be found");
+        assert_eq!(result.pv.len(), 1, "smallest PC should use a single piece");
+
+        let mut sim = state.board.clone();
+        for m in &result.pv {
+            sim.do_move(m);
+        }
+        assert!(sim.is_empty(), "PC path must clear the board");
+    }
+
+    #[test]
+    fn test_pc_mode_empty_board_returns_none() {
+        let state = GameState::new(Board::new(), Piece::T, vec![Piece::I]);
+        let config = SearchConfig {
+            pc_mode: true,
+            depth: 4,
+            ..SearchConfig::default()
+        };
+        let weights = EvalWeights::default();
+        assert!(
+            find_best_move(&state, &config, &weights).is_none(),
+            "empty board has no PC to solve"
+        );
+    }
+
+    #[test]
     fn test_result_move_is_valid() {
         let state = GameState::new(Board::new(), Piece::I, vec![Piece::T]);
         let config = SearchConfig {
@@ -1019,39 +1071,64 @@ pub fn find_best_move_pc(
         state.queue.clone()
     };
 
-    let max_depth = config.depth; // Use full requested depth
+    let max_depth = config.depth.max(1); // Use full requested depth
     let zobrist_keys = get_zobrist_keys();
-    let mut pc_tt = std::collections::HashSet::with_capacity(1000);
-
     let start_time = get_now_ms();
-
-    let mut path = Vec::new();
     let time_limit = config.time_budget_ms.unwrap_or(1000); // Default to 1s
-    if find_pc_path(
-        &state.board,
-        state.current,
-        state.hold,
-        &search_queue,
-        0,
-        max_depth,
-        &zobrist_keys,
-        &mut pc_tt,
-        &mut path,
-        start_time,
-        Some(time_limit),
-        config.debug_pc,
-    ) {
-        let best_move = path[0];
-        let hold_used = best_move.piece() != state.current;
 
-        return Some(SearchResult {
-            best_move,
-            hold_used,
-            score: 1000.0,
-            pv: path,
-            coaching_state: state.coaching,
-            pv_clear_events: Vec::new(),
-        });
+    // Already clear: there is no PC to search for.
+    if state.board.is_empty() {
+        return None;
+    }
+
+    // Iterative deepening: try shorter solutions first so the displayed PC is
+    // the smallest one (fewest pieces). A fresh transposition set is used per
+    // depth because a failed shallow search must not prune a deeper one.
+    for depth in 1..=max_depth {
+        let mut pc_tt = std::collections::HashSet::with_capacity(1000);
+        let mut path = Vec::new();
+
+        if find_pc_path(
+            &state.board,
+            state.current,
+            state.hold,
+            &search_queue,
+            0,
+            depth,
+            &zobrist_keys,
+            &mut pc_tt,
+            &mut path,
+            start_time,
+            Some(time_limit),
+            config.debug_pc,
+        ) {
+            // find_pc_path can report success with an empty path when the board
+            // starts clear; guard against indexing it.
+            if path.is_empty() {
+                return None;
+            }
+
+            let best_move = path[0];
+            let hold_used = best_move.piece() != state.current;
+
+            return Some(SearchResult {
+                best_move,
+                hold_used,
+                score: 1000.0,
+                pv: path,
+                coaching_state: state.coaching,
+                pv_clear_events: Vec::new(),
+            });
+        }
+
+        if get_now_ms() - start_time > time_limit {
+            pc_log!(
+                config.debug_pc,
+                "PC iterative deepening timed out at depth {}",
+                depth
+            );
+            break;
+        }
     }
 
     None
